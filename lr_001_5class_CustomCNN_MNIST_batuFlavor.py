@@ -352,50 +352,6 @@ def evaluate_user_model_accuracy(model, testloader, device) -> float:
 
 testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
 
-# Initialize matrices for results with an additional dimension for num_active_users
-global_grad_mag = np.zeros((num_runs, len(seeds_for_avg), num_timeframes))
-
-# Adjust other relevant matrices similarly
-successful_users_record = np.zeros((num_runs, len(seeds_for_avg), num_timeframes))
-loc_grad_mag = np.zeros((num_runs, len(seeds_for_avg), num_timeframes, num_users, num_users))
-loc_grad_mag_memory = np.zeros((num_runs, len(seeds_for_avg), num_timeframes, num_users, num_users))
-memory_matrix_mag = np.zeros((num_runs, len(seeds_for_avg), num_timeframes, num_users, num_users))
-
-accuracy_distributions = {
-    run: {
-        seed_index: {timeframe: None for timeframe in range(num_timeframes)}
-        for seed_index in range(len(seeds_for_avg))
-    }
-    for run in range(num_runs)
-}
-
-accuracy_per_labels = {
-    run: {
-        seed_index: {timeframe: None for timeframe in range(num_timeframes)}
-        for seed_index in range(len(seeds_for_avg))
-    }
-    for run in range(num_runs)
-}
-
-correctly_received_packets_stats = {
-    run: {
-        seed_index: {
-            timeframe: {'mean': None, 'variance': None}  # Removed num_active_users dimension
-            for timeframe in range(num_timeframes)
-        }
-        for seed_index in range(len(seeds_for_avg))
-    }
-    for run in range(num_runs)
-}
-
-new_stale_data_info = {
-    run: {
-        seed_index: {timeframe: None for timeframe in range(num_timeframes)}
-        for seed_index in range(len(seeds_for_avg))
-    }
-    for run in range(num_runs)
-}
-
 # Main training loop
 seed_count = 1
 
@@ -432,9 +388,9 @@ for run in range(num_runs):
             np.full(num_users - num_users // 2, 0.1)  # Second half: 0.1
         ])
         fl_system = FederatedLearning(
-            selected_mode, slotted_aloha, num_users, num_slots, tx_prob, device,
-            cos_similarity, model, TrainSetUsers, epochs, optimizer, criterion, use_memory_matrix, fraction,
-            loc_grad_mag, loc_grad_mag_memory, testloader, gamma_momentum, learning_rate, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner
+            selected_mode, num_users, device,
+            cos_similarity, model, TrainSetUsers, epochs, optimizer, criterion, fraction,
+            testloader, learning_rate, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner
             )
 
         for timeframe in range(num_timeframes):
@@ -512,60 +468,6 @@ final_results_df = pd.DataFrame(final_results)
 file_path = os.path.join(save_dir, 'final_results.csv')
 final_results_df.to_csv(file_path, index=False)
 print(f"Final results saved to: {file_path}")
-
-# Save the number of successful users record to CSV
-successful_users_record_file_path = os.path.join(save_dir, 'successful_users_record.csv')
-# Open the file in write mode
-with open(successful_users_record_file_path, 'w') as f:
-    # Write the header row
-    f.write('Run,Seed,Timeframe,Best Packets Received\n')
-
-    # Iterate over runs, seeds, and timeframes to write the best packets received
-    for run in range(num_runs):
-        for seed_index, seed in enumerate(seeds_for_avg):
-            for timeframe in range(num_timeframes):
-                best_packets_received = successful_users_record[run, seed_index, timeframe]
-                f.write(f'{run},{seed},{timeframe + 1},{best_packets_received}\n')
-
-print(f"Successful users record saved to: {successful_users_record_file_path}")
-
-# Accuracy distribution
-distributions_file_path = os.path.join(save_dir, 'accuracy_distributions.csv')
-# Open the file in write mode
-with open(distributions_file_path, 'w') as f:
-    # Write the header row
-    f.write('Run,Seed,Timeframe,Accuracy\n')
-    # Iterate over runs, seeds, and timeframes to write the accuracies
-    for run in range(num_runs):
-        for seed_index, seed in enumerate(seeds_for_avg):
-            for timeframe in range(num_timeframes):
-                accuracy = accuracy_distributions[run][seed_index][timeframe]  # Adjust indexing to exclude num_active_users
-                f.write(f'{run},{seed},{timeframe + 1},{accuracy}\n')
-print(f"Accuracy distributions saved to: {distributions_file_path}")
-
-# Accuracy distribution (Class 0)
-
-# Accuracy per label
-acc_file_path = os.path.join(save_dir, 'accuracy_per_label_distributions.csv')
-with open(acc_file_path, 'w') as f:
-    # Write header row
-    header = 'Run,Seed,Timeframe,' + ','.join([f'Acc_Class_{i}' for i in range(10)]) + '\n'
-    f.write(header)
-
-    # Write data rows
-    for run in range(num_runs):
-        for seed_index, seed in enumerate(seeds_for_avg):
-            for timeframe in range(num_timeframes):
-                acc_vals = accuracy_per_labels[run][seed_index][timeframe]
-
-                if isinstance(acc_vals, dict):
-                    acc_str = ','.join([f'{acc_vals[i]:.4f}' for i in range(10)])
-                else:
-                    acc_str = f'{acc_vals:.4f}'
-
-                f.write(f'{run},{seed},{timeframe + 1},{acc_str}\n')
-
-print(f"Per-label accuracy distributions saved to: {acc_file_path}")
 
 # Save correctly received packets statistics to CSV
 end_time = time.time()
