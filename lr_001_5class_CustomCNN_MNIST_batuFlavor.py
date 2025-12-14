@@ -25,7 +25,8 @@ start_time = time.time()
 # Simulate command-line arguments
 sys.argv = [
     'placeholder_script_name',
-    '--learning_rate', '0.01',
+    '--learning_rate_client', '0.01',
+    '--learning_rate_server', '0.01',
     '--epochs', '1',
     '--batch_size', '400',
     '--num_users', '100',
@@ -44,7 +45,8 @@ sys.argv = [
 
 # Command-line arguments
 parser = argparse.ArgumentParser(description="Federated Learning with Slotted ALOHA and CIFAR-10 Dataset")
-parser.add_argument('--learning_rate', type=float, default=0.0001, help='Learning rate for training')
+parser.add_argument('--learning_rate_client', type=float, default=0.0001, help='Learning rate for client training')
+parser.add_argument('--learning_rate_server', type=float, default=0.0001, help='Learning rate for server training')
 parser.add_argument('--epochs', type=int, default=3, help='Number of epochs for training')
 parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training')
 parser.add_argument('--num_users', type=int, default=10, help='Number of users in federated learning')
@@ -63,7 +65,8 @@ parser.add_argument('--dirichlet_alpha', type=float, default=0.5,help='Alpha coe
 args = parser.parse_args()
 
 # Parsed arguments
-learning_rate = args.learning_rate
+learning_rate_client = args.learning_rate_client
+learning_rate_server = args.learning_rate_server
 epochs = args.epochs
 batch_size = args.batch_size
 num_users = args.num_users
@@ -306,7 +309,7 @@ for run in range(num_runs):
         criterion = nn.CrossEntropyLoss()
         #optimizer = optim.Adam(model.parameters(), lr=learning_rate)
         
-        optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=learning_rate, weight_decay=1e-4)
+        optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=learning_rate_client, weight_decay=1e-4)
 
         #Initialize FL system once and for all for this seed.
         
@@ -321,7 +324,7 @@ for run in range(num_runs):
         fl_system = FederatedLearning(
             selected_mode, num_users, device,
             cos_similarity, model, TrainSetUsers, epochs, optimizer, criterion, fraction,
-            testloader, learning_rate, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner
+            testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner
             )
 
         for timeframe in range(num_timeframes):

@@ -7,7 +7,7 @@ import time
 class FederatedLearning:
     def __init__(self, mode, num_users, device, 
                     cos_similarity, model, TrainSetUsers, epochs, optimizer, criteron, fraction, 
-                    testloader, lr, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner):
+                    testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner):
         
         #Gradients at users
         self.grad_per_user = [[torch.zeros_like(param).to(device) for param in model.parameters()] for _ in range(num_users)]
@@ -51,7 +51,7 @@ class FederatedLearning:
         self.lp_cos_val = 0
         self.simQueue = deque(maxlen=5)
         self.gradientMags = deque(maxlen=self.num_users)
-        self.lr = lr
+        self.learning_rate_server = learning_rate_server
         self.SEst = 0
         self.userListUL = set(range(self.num_users))
         self.userListDL = set(range(self.num_users))
@@ -489,7 +489,7 @@ class FederatedLearning:
         self.adamMomentum = [self.beta1 * m + (1 - self.beta1) * (s / len(selected_users_UL)) for m, s in zip(self.adamMomentum, self.sum_terms)]
         self.adamVariance = [self.beta2 * v + (1 - self.beta2) * ((s / len(selected_users_UL)) ** 2) for v, s in zip(self.adamVariance, self.sum_terms)]
 
-        self.w_global = [self.w_global[j] + self.adamMomentum[j]/ (torch.sqrt(self.adamVariance[j]) + 1e-8) for j in range(len(self.sum_terms))] 
+        self.w_global = [self.w_global[j] + self.learning_rate_server * self.adamMomentum[j]/ (torch.sqrt(self.adamVariance[j]) + 1e-8) for j in range(len(self.sum_terms))] 
         self.UserAgeDL = self.UserAgeDL + self.allOnes
 
         return self.w_global
