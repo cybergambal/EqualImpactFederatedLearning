@@ -174,13 +174,6 @@ class FederatedLearning:
         check = conLHS <= conRHS 
         return check
 
-    def updateAccuracy(self, accuracy):
-        if accuracy > self.maxAccuracy:
-            self.patience = 0
-            self.maxAccuracy = accuracy
-            self.bestWeight = [g.clone for g in self.w_global]
-            
-
     def stepState(self):
         for iii in range(self.num_users):
             if (self.intermittentStateOneHot[iii]):
@@ -493,7 +486,10 @@ class FederatedLearning:
             self.w_user[user] = [w.clone() for w in self.w_global]
             self.UserAgeDL[user] = 0
 
-        self.w_global = [self.w_global[j] + self.sum_terms[j]/len(selected_users_UL) for j in range(len(self.sum_terms))] 
+        self.adamMomentum = [self.beta1 * m + (1 - self.beta1) * (s / len(selected_users_UL)) for m, s in zip(self.adamMomentum, self.sum_terms)]
+        self.adamVariance = [self.beta2 * v + (1 - self.beta2) * ((s / len(selected_users_UL)) ** 2) for v, s in zip(self.adamVariance, self.sum_terms)]
+
+        self.w_global = [self.w_global[j] + self.adamMomentum[j]/ (torch.sqrt(self.adamVariance[j]) + 1e-8) for j in range(len(self.sum_terms))] 
         self.UserAgeDL = self.UserAgeDL + self.allOnes
 
         return self.w_global
@@ -509,13 +505,6 @@ class FederatedLearning:
                 # Compute cosine similarity
                 lp_cos_val = self.lp_cosine_similarity(user_grad_vector, global_grad_vector, p = self.cos_similarity)
                 print(f"Similarity between {user_id} and {user_id2} = {lp_cos_val}")
-
-    def simulate_transmissions(self):
-        """Simulates slotted ALOHA transmissions."""
-        decisions = np.random.rand(self.num_users) < self.tx_prob
-        if np.sum(decisions) == 1:
-            return [i for i, decision in enumerate(decisions) if decision]
-        return []
 
     def run(self, runNo, seed_index, timeframe):
         """Dispatch based on the FL mode."""
