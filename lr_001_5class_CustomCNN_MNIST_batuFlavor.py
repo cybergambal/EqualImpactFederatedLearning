@@ -314,11 +314,11 @@ for run in range(num_runs):
         #Initialize FL system once and for all for this seed.
         
         keepProbAvail = np.concatenate([
-            np.full(num_users // 2, 0.1),  # First half: 0.1
+            np.full(num_users // 2, 0.5),  # First half: 0.5
             np.full(num_users - num_users // 2, 0.9)  # Second half: 0.9
         ])
         keepProbNotAvail = np.concatenate([
-            np.full(num_users // 2, 0.9),  # First half: 0.9
+            np.full(num_users // 2, 0.5),  # First half: 0.5
             np.full(num_users - num_users // 2, 0.1)  # Second half: 0.1
         ])
         fl_system = FederatedLearning(
@@ -343,7 +343,7 @@ for run in range(num_runs):
             
                 per_label_accuracy, accuracy = evaluate_per_label_accuracy(model, testloader, device, num_classes=10)
 
-
+            accuracy_distributions[run][seed_index][timeframe] = accuracy
 
             torch.cuda.empty_cache()
 

@@ -42,7 +42,7 @@ class FederatedLearning:
         self.selected_users = None
         self.keepProbAvail = keepProbAvail
         self.keepProbNotAvail = keepProbNotAvail
-        self.intermittentStateOneHot = np.array([1 if self.keepProbAvail[u] > random.random() else 0 for u in range(num_users)])
+        self.intermittentStateOneHot = np.array([1 if (1-self.keepProbNotAvail[u])/(2-self.keepProbAvail[u]-self.keepProbNotAvail[u]) > random.random() else 0 for u in range(num_users)])
         self.intermittentUsers = np.where(self.intermittentStateOneHot)
         self.bufferSize = 0
         self.bufferLimit = bufferLimit
