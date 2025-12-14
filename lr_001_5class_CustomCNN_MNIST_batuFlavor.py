@@ -30,24 +30,13 @@ sys.argv = [
     '--batch_size', '400',
     '--num_users', '100',
     '--fraction', '1',
-    '--transmission_probability', '0.1',
-    '--num_slots', '100',
     '--num_timeframes', '10000',
     '--user_data_size', '500',
     '--seeds', '56', #'3', #, '29', '85', '65',
-    '--gamma_momentum', '0.15',
-    '--use_memory_matrix', 'false',
-    '--arrival_rate', '0.1',
-    '--phase', '10', # number of timeframes per phase, there are in total five phases
     '--num_runs', '1',
-    '--slotted_aloha', 'false', # for the NeurIPS paper, we don't consider random access channel
-    '--num_memory_cells', '1',
     '--selected_mode', 'async_asymp_EI',
     '--cos_similarity', '4',
-    '--cycle', '3',
     '--train_mode', 'all',
-    '--keepProbAvail', '0.25',
-    '--keepProbNotAvail', '0.9',
     '--bufferLimit', '1',
     '--theta_inner', '0.1',
     '--dirichlet_alpha', '0.5'
@@ -60,24 +49,13 @@ parser.add_argument('--epochs', type=int, default=3, help='Number of epochs for 
 parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training')
 parser.add_argument('--num_users', type=int, default=10, help='Number of users in federated learning')
 parser.add_argument('--fraction', type=float, nargs='+', default=[0.1], help='Fraction for top-k sparsification')
-parser.add_argument('--transmission_probability', type=float, default=0.1, help='Transmission probability for Slotted ALOHA')
-parser.add_argument('--num_slots', type=int, default=10, help='Number of slots for Slotted ALOHA simulation')
 parser.add_argument('--num_timeframes', type=int, default=15, help='Number of timeframes for simulation')
 parser.add_argument('--seeds', type=int, nargs='+', default=[85, 12, 29], help='Random seeds for averaging results')
-parser.add_argument('--gamma_momentum', type=float, nargs='+', default=[0.6], help='Momentum for memory matrix')
-parser.add_argument('--use_memory_matrix', type=str, default='true', help='Switch to use memory matrix (true/false)')
 parser.add_argument('--user_data_size', type=int, default=2000, help='Number of samples each user gets')
-parser.add_argument('--arrival_rate', type=float, default=0.5,help='Arrival rate of new information')
-parser.add_argument('--phase', type=int, default=5,help='When concept drift happens, when distribution change from one Class to another')
 parser.add_argument('--num_runs', type=int, default=5,help='Number of simulations')
-parser.add_argument('--slotted_aloha', type=str, default='true',help='Whether we use Slotted aloha in the simulation')
-parser.add_argument('--num_memory_cells', type=int, default=6,help='Number of memory cells per client')
 parser.add_argument('--selected_mode', type=str, default='async_Inner',help='Which setting we are using: genie_aided, vanilla, user_selection_cos, user_selection_cos_dis, user_selection_acc, user_selection_acc_increment, user_selection_aog, user_selection_norm')
 parser.add_argument('--cos_similarity', type=int, default=2,help='What type of cosine similarity we want to test: cos2 = 2, cos4 = 4, ...')
-parser.add_argument('--cycle', type=int, default=1,help='Number of cycles')
 parser.add_argument('--train_mode', type=str, default='all',help='Which part of network we are training: all, dense, conv')
-parser.add_argument('--keepProbAvail', type=float, default=1,help='Probability of a user keeping its state when available')
-parser.add_argument('--keepProbNotAvail', type=float, default=1,help='Probability of a user keeping its state when not available')
 parser.add_argument('--bufferLimit', type=int, default=1,help='Buffer size limit for how many users to wait before aggregation')
 parser.add_argument('--theta_inner', type=float, default=0.9,help='Theta coeffcient for inner product test')
 parser.add_argument('--dirichlet_alpha', type=float, default=0.5,help='Alpha coeffcient for dirichlet distribution')
@@ -90,25 +68,13 @@ epochs = args.epochs
 batch_size = args.batch_size
 num_users = args.num_users
 fraction = args.fraction
-transmission_probability = args.transmission_probability
-num_slots = args.num_slots
 num_timeframes = args.num_timeframes
 seeds_for_avg = args.seeds
-gamma_momentum = args.gamma_momentum
-use_memory_matrix = args.use_memory_matrix.lower() == 'true'
 user_data_size = args.user_data_size
-tx_prob = args.transmission_probability
-arrival_rate = args.arrival_rate
-phase = args.phase
 num_runs = args.num_runs
-slotted_aloha = args.slotted_aloha
-num_memory_cells = args.num_memory_cells
 selected_mode = args.selected_mode
-cycle = args.cycle
 train_mode = args.train_mode
 cos_similarity = args.cos_similarity
-keepProbAvail = args.keepProbAvail
-keepProbNotAvail = args.keepProbNotAvail
 bufferLimit = args.bufferLimit
 theta_inner = args.theta_inner
 dirichlet_alpha = args.dirichlet_alpha
@@ -117,22 +83,6 @@ dirichlet_alpha = args.dirichlet_alpha
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 torch.backends.cuda.matmul.allow_tf32 = True
 print(f"\n{'*' * 50}\n*** Using device: {device} ***\n{'*' * 50}\n")
-
-class_mappings = {
-    0: [9, 6],
-    1: [0, 5],
-    2: [4, 1],
-    3: [8, 7],
-    4: [3, 5]
-}
-
-# Function to map original labels to new classes
-def map_to_new_classes(original_labels):
-    new_labels = np.zeros_like(original_labels)
-    for new_class, original_classes in class_mappings.items():
-        for original_class in original_classes:
-            new_labels[original_labels == original_class] = new_class
-    return new_labels
 
 data_mode = "CIFAR"
 
@@ -330,33 +280,6 @@ def evaluate_per_label_accuracy(model, testloader, device, num_classes=10):
         overall_accuracy = 100 * total_correct / total_samples if total_samples > 0 else 0
     
     return per_label_accuracy, overall_accuracy
-
-def evaluate_user_model_accuracy(model, testloader, device) -> float:
-    """
-    Evaluate the accuracy of a user's model on the shared test set.
-
-    Args:
-        model (nn.Module): The trained model for the user.
-        testloader (DataLoader): The test dataset loader (shared by all users).
-        device (torch.device): The device to run evaluation on.
-
-    Returns:
-        float: Accuracy of the model on the test set.
-    """
-    model.eval()
-    correct = 0
-    total = 0
-
-    with torch.no_grad():
-        for images, labels in testloader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            preds = outputs.argmax(dim=1)
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-
-
-    return correct / total if total > 0 else 0.0
 
 testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
 
