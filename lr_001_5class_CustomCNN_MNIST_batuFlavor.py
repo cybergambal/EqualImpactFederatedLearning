@@ -179,6 +179,14 @@ print(len(trainset), "training samples loaded.")
 
 assert len(trainset) >= num_users * user_data_size, "Dataset too small for requested user allocation!"
 
+accuracy_distributions = {
+    run: {
+        seed_index: {timeframe: None for timeframe in range(num_timeframes)}
+        for seed_index in range(len(seeds_for_avg))
+    }
+    for run in range(num_runs)
+}
+
 if data_mode == "MNIST":
     # CustomCNN Model
     class Model(nn.Module):
@@ -410,12 +418,6 @@ for run in range(num_runs):
                 per_label_accuracy, accuracy = evaluate_per_label_accuracy(model, testloader, device, num_classes=10)
 
 
-            # Store results and check if this is the best accuracy so far
-            accuracy_distributions[run][seed_index][timeframe] = accuracy
-            accuracy_per_labels[run][seed_index][timeframe] = per_label_accuracy
-
-            correctly_received_packets_stats[run][seed_index][timeframe]['mean'] = fl_system.lp_cos_val
-            correctly_received_packets_stats[run][seed_index][timeframe]['variance'] = 0
 
             torch.cuda.empty_cache()
 
@@ -445,20 +447,12 @@ for run in range(num_runs):
                 'Seed': seed,
                 'Timeframe': timeframe + 1,
                 'Accuracy': accuracy_distributions[run][seed_index][timeframe],
-                'Global Gradient Magnitude': global_grad_mag[run, seed_index, timeframe],
-                'Packets Received': correctly_received_packets_stats[run][seed_index][timeframe]['mean'],
-                'Variance Packets': correctly_received_packets_stats[run][seed_index][timeframe]['variance']
             })
 
             # Add additional per-timeframe statistics, independent of num_active_users
             final_results.append({
                 'Run': run,
                 'Seed': seed,
-                'Timeframe': timeframe + 1,
-                'Best Global Grad Mag': global_grad_mag[run, seed_index, timeframe],
-                'Local Grad Mag': loc_grad_mag[run, seed_index, timeframe].tolist(),
-                'Local Grad Mag with Memory': loc_grad_mag_memory[run, seed_index, timeframe].tolist(),
-                'Memory Matrix Magnitude': memory_matrix_mag[run, seed_index, timeframe].tolist(),
                 'Best Accuracy': accuracy_distributions[run][seed_index][timeframe],
                 'Best-Successful Users': contribution.tolist()[timeframe%(num_timeframes//num_users)] 
             })
