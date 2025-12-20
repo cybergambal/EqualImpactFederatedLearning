@@ -35,6 +35,7 @@ class FederatedLearning:
         self.UserAgeUL = torch.ones(self.num_users, 1).to(device)
         self.UserAgeDL = torch.ones(self.num_users, 1).to(device) 
         self.UserAgeMemory = torch.zeros(self.num_users, 1).to(device)
+        self.selected_users_UL = None
         self.allOnes = torch.ones(self.num_users, 1).to(device)
         self.lastAge = torch.zeros(self.num_users, 1).to(device)
         self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
@@ -420,19 +421,18 @@ class FederatedLearning:
         #Choose available users according to their p_u
         tempPi = self.pi[self.intermittentUsers].flatten()            
         bernoulli_flips = np.random.rand(len(self.intermittentUsers)) < tempPi
-        selected_users_UL = self.intermittentUsers[bernoulli_flips]
-        self.num_send += len(selected_users_UL)
-        if (len(selected_users_UL) == 0):
+        self.selected_users_UL = self.intermittentUsers[bernoulli_flips]
+        self.num_send += len(self.selected_users_UL)
+        if (len(self.selected_users_UL) == 0):
             print("No user transmits")
             return self.w_global
-        print(f"Transmitting Users: {selected_users_UL.tolist()}")
-
+        print(f"Transmitting Users: {self.selected_users_UL.tolist()}")
         #Obtain gradient from users that transmit
-        self.train_users(selected_users_UL.tolist())
+        self.train_users(self.selected_users_UL.tolist())
         
         #Sum of trained gradients
         self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
-        for user in selected_users_UL:
+        for user in self.selected_users_UL:
             self.contribution[user] += 1/self.UserAgeDL[user].cpu().item()
             self.sum_terms = [self.sum_terms[j] + self.sparse_gradient[user][j]/(self.UserAgeDL[user]) for j in range(len(self.sum_terms))] 
         
@@ -441,7 +441,7 @@ class FederatedLearning:
             self.w_user[user] = [w.clone() for w in self.w_global]
             self.UserAgeDL[user] = 0
 
-        self.w_global = [self.w_global[j] + self.sum_terms[j]/len(selected_users_UL) for j in range(len(self.sum_terms))] 
+        self.w_global = [self.w_global[j] + self.sum_terms[j]/len(self.selected_users_UL) for j in range(len(self.sum_terms))] 
         self.UserAgeDL = self.UserAgeDL + self.allOnes
 
         return self.w_global
@@ -470,13 +470,13 @@ class FederatedLearning:
         sorted_indices = torch.argsort(age_diff, descending=True)
         topk_indices = sorted_indices[:k]
         
-        selected_users_UL = self.intermittentUsers[topk_indices.cpu().numpy()]
-        print(f"Selected User in UL: {selected_users_UL}")
-        self.train_users(selected_users_UL.tolist())
+        self.selected_users_UL = self.intermittentUsers[topk_indices.cpu().numpy()]
+        print(f"Selected User in UL: {self.selected_users_UL}")
+        self.train_users(self.selected_users_UL.tolist())
 
         #Sum of trained gradients
         self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
-        for user in selected_users_UL:
+        for user in self.selected_users_UL:
             self.UserAgeUL[user] = 0
             self.contribution[user] += 1/self.UserAgeDL[user].cpu().item()
             self.sum_terms = [self.sum_terms[j] + self.sparse_gradient[user][j]/(self.UserAgeDL[user]) for j in range(len(self.sum_terms))] 
@@ -486,8 +486,8 @@ class FederatedLearning:
             self.w_user[user] = [w.clone() for w in self.w_global]
             self.UserAgeDL[user] = 0
 
-        self.adamMomentum = [self.beta1 * m + (1 - self.beta1) * (s / len(selected_users_UL)) for m, s in zip(self.adamMomentum, self.sum_terms)]
-        self.adamVariance = [self.beta2 * v + (1 - self.beta2) * ((s / len(selected_users_UL)) ** 2) for v, s in zip(self.adamVariance, self.sum_terms)]
+        self.adamMomentum = [self.beta1 * m + (1 - self.beta1) * (s / len(self.selected_users_UL)) for m, s in zip(self.adamMomentum, self.sum_terms)]
+        self.adamVariance = [self.beta2 * v + (1 - self.beta2) * ((s / len(self.selected_users_UL)) ** 2) for v, s in zip(self.adamVariance, self.sum_terms)]
 
         self.w_global = [self.w_global[j] + self.learning_rate_server * self.adamMomentum[j]/ (torch.sqrt(self.adamVariance[j]) + 1e-8) for j in range(len(self.sum_terms))] 
         self.UserAgeDL = self.UserAgeDL + self.allOnes

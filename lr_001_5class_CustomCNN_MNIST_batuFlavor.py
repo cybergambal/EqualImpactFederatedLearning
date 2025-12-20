@@ -100,6 +100,14 @@ contribution_distributions = {
     for run in range(num_runs)
 }
 
+chosen_users_over_time = {
+    run: {
+        seed_index: {timeframe: {user: 0 for user in range(num_users)} for timeframe in range(num_timeframes)}
+        for seed_index in range(len(seeds_for_avg))
+    }
+    for run in range(num_runs)
+}
+
 #Load model
 Model = get_Model(data_mode, train_mode=train_mode)
 
@@ -163,6 +171,9 @@ for run in range(num_runs):
             
                 per_label_accuracy, accuracy = evaluate_per_label_accuracy(model, testloader, device, num_classes=10)
 
+            for user in fl_system.selected_users_UL:
+                chosen_users_over_time[run][seed_index][timeframe][user] = fl_system.selected_users_UL[user]
+
             accuracy_distributions[run][seed_index][timeframe] = accuracy
 
             torch.cuda.empty_cache()
@@ -181,4 +192,4 @@ for run in range(num_runs):
 end_time = time.time()
 elapsed_time = end_time - start_time
 current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-save_data_to_csv(accuracy_distributions, contribution_distributions, num_users, num_timeframes, args, current_time, start_time, elapsed_time, end_time, num_runs, seeds_for_avg, num_send)
+save_data_to_csv(accuracy_distributions, contribution_distributions, chosen_users_over_time, num_users, num_timeframes, args, current_time, start_time, elapsed_time, end_time, num_runs, seeds_for_avg, num_send)

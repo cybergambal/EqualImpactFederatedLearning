@@ -217,7 +217,7 @@ def evaluate_per_label_accuracy(model, testloader, device, num_classes=10):
     
     return per_label_accuracy, overall_accuracy
 
-def save_data_to_csv(accuracy_distributions, contribution_distributions, num_users, num_timeframes, args, current_time, start_time, elapsed_time, end_time, num_runs, seeds_for_avg, num_send):
+def save_data_to_csv(accuracy_distributions, contribution_distributions, chosen_users_over_time, num_users, num_timeframes, args, current_time, start_time, elapsed_time, end_time, num_runs, seeds_for_avg, num_send):
     """
     Save accuracy distributions and contribution distributions to CSV files.
 
@@ -262,12 +262,16 @@ def save_data_to_csv(accuracy_distributions, contribution_distributions, num_use
 
     final_results_df = pd.DataFrame(final_results)
     contribution_data_df = pd.DataFrame(contribution_data)
+    chosen_users_over_time_df = pd.DataFrame(chosen_users_over_time)
     file_path = os.path.join(save_dir, 'final_results.csv')
     final_results_df.to_csv(file_path, index=False)
     contribution_file_path = os.path.join(save_dir, 'contribution_data.csv')
     contribution_data_df.to_csv(contribution_file_path, index=False)
+    chosen_users_file_path = os.path.join(save_dir, 'chosen_users_over_time.csv')
+    chosen_users_over_time_df.to_csv(chosen_users_file_path, index=False)
     print(f"Final results saved to: {file_path}")
     print(f"Contribution data saved to: {contribution_file_path}")
+    print(f"Chosen users over time data saved to: {chosen_users_file_path}")
     # Save correctly received packets statistics to CSV
 
     # Save run summary
