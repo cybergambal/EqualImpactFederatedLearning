@@ -169,8 +169,8 @@ for run in range(num_runs):
             
                 per_label_accuracy, accuracy = evaluate_per_label_accuracy(model, testloader, device, num_classes=10)
 
-            for user in fl_system.selected_users_UL:
-                chosen_users_over_time[run][seed_index][timeframe][user] = fl_system.selected_users_UL[user]
+            for index, user in enumerate(fl_system.selected_users_UL):
+                chosen_users_over_time[run][seed_index][timeframe][user] = fl_system.selected_users_UL[index]
 
             accuracy_distributions[run][seed_index][timeframe] = accuracy
 
