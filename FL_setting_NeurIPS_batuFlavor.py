@@ -72,6 +72,7 @@ class FederatedLearning:
         self.adamVariance = [torch.zeros_like(param).to(self.device) for param in self.w_global]
         self.beta1 = 0.9
         self.beta2 = 0.99
+        self.adam_t = 0  # timestep counter
     
     def lp_cosine_similarity(self, x: torch.Tensor, y: torch.Tensor, p: int = 2) -> float:
         """
@@ -441,7 +442,15 @@ class FederatedLearning:
             self.w_user[user] = [w.clone() for w in self.w_global]
             self.UserAgeDL[user] = 0
 
-        self.w_global = [self.w_global[j] + self.sum_terms[j]/len(self.selected_users_UL) for j in range(len(self.sum_terms))] 
+        self.adamMomentum = [self.beta1 * m + (1 - self.beta1) * (s / len(self.selected_users_UL)) for m, s in zip(self.adamMomentum, self.sum_terms)]
+        self.adamVariance = [self.beta2 * v + (1 - self.beta2) * ((s / len(self.selected_users_UL)) ** 2) for v, s in zip(self.adamVariance, self.sum_terms)]
+
+        # Add bias correction
+        self.adam_t += 1
+        m_hat = [m / (1 - self.beta1 ** self.adam_t) for m in self.adamMomentum]
+        v_hat = [v / (1 - self.beta2 ** self.adam_t) for v in self.adamVariance]
+
+        self.w_global = [self.w_global[j] + self.learning_rate_server * m_hat[j] / (torch.sqrt(v_hat[j]) + 1e-8) for j in range(len(self.sum_terms))] 
         self.UserAgeDL = self.UserAgeDL + self.allOnes
 
         return self.w_global
@@ -489,7 +498,12 @@ class FederatedLearning:
         self.adamMomentum = [self.beta1 * m + (1 - self.beta1) * (s / len(self.selected_users_UL)) for m, s in zip(self.adamMomentum, self.sum_terms)]
         self.adamVariance = [self.beta2 * v + (1 - self.beta2) * ((s / len(self.selected_users_UL)) ** 2) for v, s in zip(self.adamVariance, self.sum_terms)]
 
-        self.w_global = [self.w_global[j] + self.learning_rate_server * self.adamMomentum[j]/ (torch.sqrt(self.adamVariance[j]) + 1e-8) for j in range(len(self.sum_terms))] 
+        # Add bias correction
+        self.adam_t += 1
+        m_hat = [m / (1 - self.beta1 ** self.adam_t) for m in self.adamMomentum]
+        v_hat = [v / (1 - self.beta2 ** self.adam_t) for v in self.adamVariance]
+
+        self.w_global = [self.w_global[j] + self.learning_rate_server * m_hat[j] / (torch.sqrt(v_hat[j]) + 1e-8) for j in range(len(self.sum_terms))] 
         self.UserAgeDL = self.UserAgeDL + self.allOnes
 
         return self.w_global
