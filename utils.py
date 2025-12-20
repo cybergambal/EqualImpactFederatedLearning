@@ -65,6 +65,13 @@ def get_data_loaders(data_mode, batch_size, num_users):
 
 def get_Model(data_mode, train_mode='all'):
 
+    """
+    Get the model class based on the dataset and training mode.
+    
+    :param data_mode: Dataset mode ("MNIST" or "CIFAR")
+    :param train_mode: Training mode ("all", "dense", or "conv")
+    """
+
     if data_mode == "MNIST":
         # CustomCNN Model
         class Model(nn.Module):
@@ -211,6 +218,22 @@ def evaluate_per_label_accuracy(model, testloader, device, num_classes=10):
     return per_label_accuracy, overall_accuracy
 
 def save_data_to_csv(accuracy_distributions, contribution_distributions, num_users, num_timeframes, args, current_time, start_time, elapsed_time, end_time, num_runs, seeds_for_avg, num_send):
+    """
+    Save accuracy distributions and contribution distributions to CSV files.
+
+    :param accuracy_distributions: Accuracy distributions data
+    :param contribution_distributions: Contribution distributions data
+    :param num_users: Number of users in federated learning
+    :param num_timeframes: Number of timeframes for simulation
+    :param args: Command-line arguments
+    :param current_time: Current timestamp for saving results
+    :param start_time: Start time of the run
+    :param elapsed_time: Elapsed time of the run
+    :param end_time: End time of the run
+    :param num_runs: Number of simulation runs
+    :param seeds_for_avg: Random seeds used for averaging results
+    :param num_send: Average gradients sent per round
+    """
     save_dir = f"./results10slot1mem_{current_time}"
     os.makedirs(save_dir, exist_ok=True)
 
