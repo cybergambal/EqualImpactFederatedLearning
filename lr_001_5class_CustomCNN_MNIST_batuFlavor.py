@@ -160,7 +160,7 @@ for run in range(num_runs):
             new_weights = fl_system.run(run, seed_index, timeframe)
     
 #-----------------------------------------------------------------------------------------------------------------------------------------------------------
-            if (timeframe%(num_users//5) == 0): 
+            if (timeframe%(max(num_users//5,1)) == 0): 
                 # Updating the global model with the new aggregated weights 
                 with torch.no_grad():
                     for param, saved in zip(model.parameters(), new_weights):
@@ -179,7 +179,7 @@ for run in range(num_runs):
             print(f"Mean Accuracy at Timeframe {timeframe + 1}: {accuracy:.2f}%")
         
         for user in range(num_users):
-            contribution_distributions[run][seed_index][user] = fl_system.user_contribution[user]
+            contribution_distributions[run][seed_index][user] = fl_system.contribution[user]
         num_send = fl_system.num_send
         del model
         del new_weights
