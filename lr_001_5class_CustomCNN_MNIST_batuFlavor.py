@@ -1,8 +1,6 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
-import torchvision
-import torchvision.transforms as transforms
+from torch import nn
 import numpy as np
 import time
 import pandas as pd
@@ -11,14 +9,8 @@ import os
 from datetime import datetime
 import sys
 import random as rnd
-import matplotlib.pyplot as plt
-from collections import Counter
-import random as rnd
-from sklearn.metrics import confusion_matrix, f1_score
 from FL_setting_NeurIPS_batuFlavor import FederatedLearning
-import torch.nn.functional as F
-from torchvision.models import resnet18, ResNet18_Weights
-from byzfl import DataDistributor
+from utils import get_data_loaders, get_Model, evaluate_per_label_accuracy, save_data_to_csv
 
 # Start time
 start_time = time.time()
@@ -40,7 +32,8 @@ sys.argv = [
     '--train_mode', 'all',
     '--bufferLimit', '1',
     '--theta_inner', '0.1',
-    '--dirichlet_alpha', '0.5'
+    '--dirichlet_alpha', '0.5',
+    '--data_mode', 'CIFAR',
 ]
 
 # Command-line arguments
@@ -61,6 +54,7 @@ parser.add_argument('--train_mode', type=str, default='all',help='Which part of 
 parser.add_argument('--bufferLimit', type=int, default=1,help='Buffer size limit for how many users to wait before aggregation')
 parser.add_argument('--theta_inner', type=float, default=0.9,help='Theta coeffcient for inner product test')
 parser.add_argument('--dirichlet_alpha', type=float, default=0.5,help='Alpha coeffcient for dirichlet distribution')
+parser.add_argument('--data_mode', type=str, default='CIFAR', help='Dataset mode: MNIST or CIFAR')
 
 args = parser.parse_args()
 
@@ -81,57 +75,15 @@ cos_similarity = args.cos_similarity
 bufferLimit = args.bufferLimit
 theta_inner = args.theta_inner
 dirichlet_alpha = args.dirichlet_alpha
+data_mode = args.data_mode
 
 # Device configuration
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 torch.backends.cuda.matmul.allow_tf32 = True
 print(f"\n{'*' * 50}\n*** Using device: {device} ***\n{'*' * 50}\n")
 
-data_mode = "CIFAR"
 
-if data_mode == "MNIST":
-    # MNIST dataset and preprocessing
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
-    trainset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
-    testset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
-else:
-    # CIFAR-10 dataset and preprocessing
-    transform1 = transforms.Compose([
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomCrop(32, 4),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],  # ImageNet stats
-                         std=[0.229, 0.224, 0.225])
-    ])
-     
-    transform2 = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],  # ImageNet stats
-                         std=[0.229, 0.224, 0.225])
-    ])
-    trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform1)
-    trainset.targets = torch.Tensor(trainset.targets).long()
-    testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform2)
-
-
-data_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=24)
-params = {
-    "data_distribution_name": "iid",
-    #"distribution_parameter": dirichlet_alpha,
-    "nb_honest": num_users,
-    "data_loader": data_loader,
-    "batch_size": batch_size,
-}
-distributor = DataDistributor(params)
-TrainSetUsers = distributor.split_data()
-testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=24)
-print(len(trainset), "training samples loaded.")
-
-assert len(trainset) >= num_users * user_data_size, "Dataset too small for requested user allocation!"
-
+# Initialize accuracy storage
 accuracy_distributions = {
     run: {
         seed_index: {timeframe: None for timeframe in range(num_timeframes)}
@@ -140,164 +92,31 @@ accuracy_distributions = {
     for run in range(num_runs)
 }
 
-if data_mode == "MNIST":
-    # CustomCNN Model
-    class Model(nn.Module):
-        def __init__(self, num_classes=10, train_mode=train_mode):
-            """
-            train_mode: 
-                'all'    → train everything
-                'dense'  → train only fc1 and fc2
-                'conv'   → train only conv1 and conv2
-            """
-            super().__init__()
-            self.conv1 = nn.Conv2d(1, 32, 3, padding=1)
-            self.pool1 = nn.MaxPool2d(2, 2)
-            self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-            self.pool2 = nn.MaxPool2d(2, 2)
-            self.fc1 = nn.Linear(64 * 7 * 7, 128)
-            self.fc2 = nn.Linear(128, num_classes)
+contribution_distributions = {
+    run: {
+        seed_index: {user: None for user in range(num_users)}
+        for seed_index in range(len(seeds_for_avg))
+    }
+    for run in range(num_runs)
+}
 
-            # Set requires_grad according to training mode
-            if train_mode == 'dense':
-                for param in self.conv1.parameters(): param.requires_grad = False
-                for param in self.conv2.parameters(): param.requires_grad = False
-            elif train_mode == 'conv':
-                for param in self.fc1.parameters(): param.requires_grad = False
-                for param in self.fc2.parameters(): param.requires_grad = False
-            # 'all' means train everything → no changes needed
-
-        def forward(self, x):
-            x = self.pool1(F.relu(self.conv1(x)))
-            x = self.pool2(F.relu(self.conv2(x)))
-            x = x.view(x.size(0), -1)
-            x = F.relu(self.fc1(x))
-            return self.fc2(x)
-
-else:
-    class ResidualBlock(nn.Module):
-        def __init__(self, inchannel, outchannel, stride=1):
-            super(ResidualBlock, self).__init__() 
-            self.dropout = nn.Dropout()
-            self.left = nn.Sequential(
-                nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=stride, padding=1, bias=False),
-                nn.GroupNorm(32,outchannel),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(outchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
-                nn.GroupNorm(32,outchannel),
-            )
-            self.shortcut = nn.Sequential()
-            if stride != 1 or inchannel != outchannel:
-                self.shortcut = nn.Sequential(
-                    nn.Conv2d(inchannel, outchannel, kernel_size=1, stride=stride, bias=False), 
-                    nn.GroupNorm(32,outchannel),
-                )
-                
-        def forward(self, x):
-            out = self.left(x)
-            out = out + self.shortcut(x)
-            #out = self.dropout(out)
-            out = F.relu(out)
-            
-            return out
-
-    class ResNet(nn.Module):
-        def __init__(self, ResidualBlock, num_classes=10):
-            super(ResNet, self).__init__()
-            self.inchannel = 64
-            self.conv1 = nn.Sequential(
-                nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
-                nn.ReLU()
-            )
-            self.layer1 = self.make_layer(ResidualBlock, 64, 2, stride=1)
-            self.layer2 = self.make_layer(ResidualBlock, 128, 2, stride=2)
-            self.layer3 = self.make_layer(ResidualBlock, 256, 2, stride=2)        
-            self.layer4 = self.make_layer(ResidualBlock, 512, 2, stride=2)        
-            self.fc = nn.Linear(512, num_classes)
-            self.dropout = nn.Dropout()
-            
-        def make_layer(self, block, channels, num_blocks, stride):
-            strides = [stride] + [1] * (num_blocks - 1)
-            layers = []
-            for stride in strides:
-                layers.append(block(self.inchannel, channels, stride))
-                self.inchannel = channels
-            return nn.Sequential(*layers)
-        
-        def forward(self, x):
-            out = self.conv1(x)
-            out = self.layer1(out)
-            out = self.layer2(out)
-            out = self.layer3(out)
-            out = self.layer4(out)
-            out = F.avg_pool2d(out, 4)
-            out = out.view(out.size(0), -1)
-            out = self.dropout(out)
-            out = self.fc(out)
-            return out    
-    def Model(num_classes):
-        return ResNet(ResidualBlock, num_classes)
-# Partitioning User Data into Memory Cells
-    
-def evaluate_per_label_accuracy(model, testloader, device, num_classes=10):
-    """
-    Evaluate per-label accuracy on CIFAR-10 (original 10 labels, no remapping).
-
-    Args:
-        model (nn.Module): Trained model.
-        testloader (DataLoader): DataLoader for the test dataset.
-        device (torch.device): Device to run evaluation on.
-        num_classes (int): Number of classes (default: 10 for CIFAR-10).
-
-    Returns:
-        dict: Per-label accuracy {label_index: accuracy_percentage}.
-    """
-    model.eval()
-    with torch.no_grad():
-        class_counts = {i: 0 for i in range(num_classes)}
-        class_correct = {i: 0 for i in range(num_classes)}
-
-        for images, labels in testloader:
-            images, labels = images.to(device), labels.to(device)
-
-            outputs = model(images)
-            predictions = outputs.argmax(dim=1)
-
-            for class_idx in range(num_classes):
-                class_mask = (labels == class_idx)
-                class_counts[class_idx] += class_mask.sum().item()
-                class_correct[class_idx] += (predictions[class_mask] == class_idx).sum().item()
- 
-        total_samples = sum(class_counts.values())
-        total_correct = sum(class_correct.values())
-        
-        per_label_accuracy = {}
-        for class_idx in range(num_classes):
-            if class_counts[class_idx] > 0:
-                per_label_accuracy[class_idx] = 100 * class_correct[class_idx] / class_counts[class_idx]
-            else:
-                per_label_accuracy[class_idx] = 0.0
-
-            print(f"Accuracy for Label {class_idx}: {per_label_accuracy[class_idx]:.2f}%")
-
-        overall_accuracy = 100 * total_correct / total_samples if total_samples > 0 else 0
-    
-    return per_label_accuracy, overall_accuracy
-
-testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False)
+#Load model
+Model = get_Model(data_mode, train_mode=train_mode)
 
 # Main training loop
-seed_count = 1
-
 for run in range(num_runs):
-    rnd.seed(run)
-    np.random.seed(run)
-    torch.manual_seed(run)
     print(f"************ Run {run + 1} ************")
 
     for seed_index, seed in enumerate(seeds_for_avg):
-        print(f"************ Seed {seed_count} ************")
-        seed_count += 1
+        rnd.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        
+        # Load data
+        TrainSetUsers, testloader = get_data_loaders(data_mode, batch_size, num_users)
+
+        print(f"************ Seed {seed_index} ************")
+        
         # Define number of classes based on the dataset
         num_classes = 10  # CIFAR-10 has 10 classes
 
@@ -311,7 +130,6 @@ for run in range(num_runs):
         
         optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=learning_rate_client, weight_decay=1e-4)
 
-        #Initialize FL system once and for all for this seed.
         
         keepProbAvail = np.concatenate([
             np.full(num_users // 2, 0.5),  # First half: 0.5
@@ -321,6 +139,8 @@ for run in range(num_runs):
             np.full(num_users // 2, 0.5),  # First half: 0.5
             np.full(num_users - num_users // 2, 0.1)  # Second half: 0.1
         ])
+
+        #Initialize FL system once and for all for this seed.
         fl_system = FederatedLearning(
             selected_mode, num_users, device,
             cos_similarity, model, TrainSetUsers, epochs, optimizer, criterion, fraction,
@@ -349,60 +169,16 @@ for run in range(num_runs):
 
             print(f"Mean Accuracy at Timeframe {timeframe + 1}: {accuracy:.2f}%")
         
-        contribution = fl_system.contribution
+        for user in range(num_users):
+            contribution_distributions[run][seed_index][user] = fl_system.user_contribution[user]
         num_send = fl_system.num_send
-        print("Number of successful users:", num_send/num_timeframes)
-        print(contribution)
         del model
         del new_weights
         del fl_system
         torch.cuda.empty_cache()
 
 # Prepare data for saving
-current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-save_dir = f"./results10slot1mem_{current_time}"
-os.makedirs(save_dir, exist_ok=True)
-
-# Save final results
-final_results = []
-for run in range(num_runs):
-    for seed_index, seed in enumerate(seeds_for_avg):
-        for timeframe in range(num_timeframes):
-            final_results.append({
-                'Run': run,
-                'Seed': seed,
-                'Timeframe': timeframe + 1,
-                'Accuracy': accuracy_distributions[run][seed_index][timeframe],
-            })
-
-            # Add additional per-timeframe statistics, independent of num_active_users
-            final_results.append({
-                'Run': run,
-                'Seed': seed,
-                'Best Accuracy': accuracy_distributions[run][seed_index][timeframe],
-                'Best-Successful Users': contribution.tolist()[timeframe%(num_timeframes//num_users)] 
-            })
-
-
-final_results_df = pd.DataFrame(final_results)
-file_path = os.path.join(save_dir, 'final_results.csv')
-final_results_df.to_csv(file_path, index=False)
-print(f"Final results saved to: {file_path}")
-
-# Save correctly received packets statistics to CSV
 end_time = time.time()
 elapsed_time = end_time - start_time
-
-# Save run summary
-summary_content = (
-    f"Start Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}\n"
-    f"End Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}\n"
-    f"Elapsed Time: {elapsed_time:.2f} seconds\n"
-    f"Arguments: {vars(args)}\n"
-)
-
-summary_file_path = os.path.join(save_dir, 'run_summary.txt')
-with open(summary_file_path, 'w') as summary_file:
-    summary_file.write(summary_content)
-
-print(f"Run summary saved to: {summary_file_path}")
+current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+save_data_to_csv(accuracy_distributions, contribution_distributions, num_users, num_timeframes, args, current_time, start_time, elapsed_time, end_time, num_runs, seeds_for_avg, num_send)
