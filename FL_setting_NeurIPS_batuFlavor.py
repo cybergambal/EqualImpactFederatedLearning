@@ -9,71 +9,76 @@ class FederatedLearning:
                     cos_similarity, model, TrainSetUsers, epochs, optimizer, criteron, fraction, 
                     testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner, unit_gradients, adam):
         
-        # Device configuration
-        self.device = device
-        
-        #Sparse gradients of users 
-        self.sparse_gradient = [[torch.zeros_like(param).to("cpu") for param in model.parameters()] for _ in range(num_users)]
+        #Arguements
+        self.learning_rate_server = learning_rate_server
+        self.epochs = epochs
+        self.num_users = num_users
+        self.fraction = fraction
+        self.mode = mode
+        self.cos_similarity = cos_similarity
+        self.bufferLimit = bufferLimit
+        self.theta_inner = theta_inner
+        self.train_mode = train_mode
+        self.unit_gradients = unit_gradients
+        self.adam = adam
+
+        #Device
+        self.device = device 
 
         #Weights in each user 
         self.w_user = [[param.data.clone().to("cpu") for param in model.parameters()] for _ in range(num_users)]
 
+        #Global Weights
         self.w_global = [param.data.clone().to(self.device) for param in model.parameters()]
-        
-        self.mode = mode
-        self.num_users = num_users
-        self.cos_similarity = cos_similarity
+
+        #Sparse gradients of users 
+        self.sparse_gradient = [[torch.zeros_like(param).to("cpu") for param in model.parameters()] for _ in range(num_users)]
+
+        #Aggregation buffer
+        self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
+
+        #Training components 
         self.model = model
-        self.TrainSetUsers = TrainSetUsers 
-        self.epochs = epochs
         self.optimizer = optimizer
         self.criteron = criteron
-        self.fraction = fraction
+        self.TrainSetUsers = TrainSetUsers 
         self.testloader = testloader
-        self.UserAgeUL = torch.ones(self.num_users, 1).to("cpu")
-        self.UserAgeDL = torch.ones(self.num_users, 1).to("cpu") 
-        self.UserAgeMemory = torch.zeros(self.num_users, 1).to("cpu")
-        self.selected_users_UL = None
-        self.allOnes = torch.ones(self.num_users, 1).to("cpu")
-        self.lastAge = torch.zeros(self.num_users, 1).to("cpu")
-        self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
-        self.selected_users = None
+
+        #Intermittent user model
         self.keepProbAvail = keepProbAvail
         self.keepProbNotAvail = keepProbNotAvail
         self.intermittentStateOneHot = np.array([1 if (1-self.keepProbNotAvail[u])/(2-self.keepProbAvail[u]-self.keepProbNotAvail[u]) > random.random() else 0 for u in range(num_users)])
         self.intermittentUsers = np.where(self.intermittentStateOneHot)
+
+        #Age based variables
+        self.UserAgeUL = torch.zeros(self.num_users, 1).to("cpu")
+        self.UserAgeDL = torch.ones(self.num_users, 1).to("cpu") 
+        self.UserAgeMemory = torch.zeros(self.num_users, 1).to("cpu")
+        self.allOnes = torch.ones(self.num_users, 1).to("cpu")
+
+
+        #Inner Product Test variables 
         self.bufferSize = 0
-        self.bufferLimit = bufferLimit
-        self.ageAcc = 0
-        self.numUp = 0
-        self.lp_cos_val = 0
-        self.simQueue = deque(maxlen=5)
-        self.gradientMags = deque(maxlen=self.num_users)
-        self.learning_rate_server = learning_rate_server
-        self.SEst = 0
         self.userListUL = set(range(self.num_users))
-        self.userListDL = set(range(self.num_users))
         self.setAllUsers = set(range(self.num_users))
-        self.theta_inner = theta_inner
         self.nu_orthogonal = 5.67 #tan(80)
-        self.maxAccuracy = 0
-        self.patience = 0
-        self.train_mode = train_mode
-        self.gradientAcumDivider = 3
 
+        #Policy calculation
         self.pi = self.calculate_policy()
-        self.contribution = np.zeros((self.num_users, 1))
-        self.num_send = 0
- 
-        self.unit_gradients = unit_gradients
         
-        self.beta1 = 0.9
-        self.beta2 = 0.99
-        self.tau = 1e-3 
+        # Tracking variables
+        self.contribution = np.zeros((self.num_users, 1))
+        self.expected_gradient_magnitude = np.zeros((self.num_users, 1))
+        self.num_send = 0
 
-        self.adamMomentum = [torch.zeros_like(param).to(self.device) for param in self.w_global]
-        self.adamVariance = [torch.full_like(param, self.tau**2).to(self.device) for param in self.w_global]
-        self.adam = adam
+        # Adam parameters
+        if self.adam: 
+            self.beta1 = 0.9
+            self.beta2 = 0.99
+            self.tau = 1e-3 
+
+            self.adamMomentum = [torch.zeros_like(param).to(self.device) for param in self.w_global]
+            self.adamVariance = [torch.full_like(param, self.tau**2).to(self.device) for param in self.w_global]
 
     def lp_cosine_similarity(self, x: torch.Tensor, y: torch.Tensor, p: int = 2) -> float:
         """
@@ -250,21 +255,24 @@ class FederatedLearning:
                 norm = np.sqrt(sum([torch.sum(g**2).item() for g in self.sparse_gradient[user]]))
                 print(f"Norm of sparse gradient for user {user}: {norm}")
     
+        #Sum of trained gradients
+        self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
+        for user in self.selected_users_UL:
+            self.UserAgeUL[user] = 0
+            self.contribution[user] += 1/tempUserAgeDL[user].cpu().item()
+            temp_gradient = [sg.to(self.device) for sg in self.sparse_gradient[user]]
+            self.expected_gradient_magnitude[user] += np.sqrt(sum([torch.sum(g**2).item() for g in temp_gradient]))
+            self.sum_terms = [self.sum_terms[j] + temp_gradient[j]/(tempUserAgeDL[user]) for j in range(len(self.sum_terms))] 
+        
         if self.adam:
-
+            # Adam update
             self.adamMomentum = [self.beta1 * m + (1 - self.beta1) * (s / len(self.selected_users_UL)) for m, s in zip(self.adamMomentum, self.sum_terms)]
             self.adamVariance = [self.beta2 * v + (1 - self.beta2) * ((s / len(self.selected_users_UL)) ** 2) for v, s in zip(self.adamVariance, self.sum_terms)]
 
-
+            # Update global model
             self.w_global = [self.w_global[j] + self.learning_rate_server * self.adamMomentum[j] / (torch.sqrt(self.adamVariance[j]) + self.tau) for j in range(len(self.sum_terms))] 
         else:
-            #Sum of trained gradients
-            self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
-            for user in self.selected_users_UL:
-                self.contribution[user] += 1/tempUserAgeDL[user].cpu().item()
-                temp_gradient = [sg.to(self.device) for sg in self.sparse_gradient[user]]
-                self.sum_terms = [self.sum_terms[j] + temp_gradient[j]/(tempUserAgeDL[user]) for j in range(len(self.sum_terms))] 
-            
+
             # Update global model
             self.w_global = [self.w_global[j] + self.learning_rate_server * self.sum_terms[j]/len(self.selected_users_UL) for j in range(len(self.sum_terms))] 
         
@@ -287,11 +295,13 @@ class FederatedLearning:
             print("No user transmits")
             return self.w_global
         print(f"Transmitting Users: {self.selected_users_UL.tolist()}")
+        
         #Obtain gradient from users that transmit
         self.train_users(self.selected_users_UL.tolist())
         
 
         tempUserAgeDL = self.UserAgeDL.clone().to(self.device)
+
         #Available users get the new global model
         for user in self.intermittentUsers:
             self.w_user[user] = [w.clone() for w in self.w_global]
@@ -322,16 +332,17 @@ class FederatedLearning:
 
         # Calculate age difference and select top-k users
         age_diff = (tempUserAgeUL - tempUserAgeDL).squeeze()
-        k = min(int(self.bufferLimit), len(self.intermittentUsers))
-        
-        sorted_indices = torch.argsort(age_diff, descending=True)
+        k = min(int(self.bufferLimit), len(self.intermittentUsers))        
+        sorted_indices = torch.atleast_1d(torch.argsort(age_diff, descending=True))
         topk_indices = sorted_indices[:k]
-        
         self.selected_users_UL = self.intermittentUsers[topk_indices.cpu().numpy()]
         print(f"Selected User in UL: {self.selected_users_UL}")
+        
+        #Obtain gradient from users that transmit
         self.train_users(self.selected_users_UL.tolist())
 
         tempUserAgeDL = self.UserAgeDL.clone().to(self.device)
+        
         #Available users get the new global model
         for user in self.intermittentUsers:
             self.w_user[user] = [w.clone() for w in self.w_global]

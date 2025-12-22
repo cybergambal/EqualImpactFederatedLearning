@@ -19,12 +19,12 @@ sys.argv = [
     '--learning_rate_server', '0.1',  #for adam 0.001, #for sgd 0.1
     '--epochs', '1',
     '--batch_size', '400',
-    '--num_users', '100',
+    '--num_users', '1',
     '--fraction', '1',
     '--num_timeframes', '100',
     '--seeds', '56', #'3', #, '29', '85', '65',
     '--num_runs', '1',
-    '--selected_mode', 'async_asymp_EI',
+    '--selected_mode', 'async_asymp_age',
     '--cos_similarity', '4',
     '--train_mode', 'all',
     '--bufferLimit', '1',
@@ -104,6 +104,14 @@ contribution_distributions = {
 chosen_users_over_time = {
     run: {
         seed_index: {timeframe: {user: 0 for user in range(num_users)} for timeframe in range(num_timeframes)}
+        for seed_index in range(len(seeds_for_avg))
+    }
+    for run in range(num_runs)
+}
+
+expected_gradient_magnitude = {
+    run: {
+        seed_index: {user: None for user in range(num_users)}
         for seed_index in range(len(seeds_for_avg))
     }
     for run in range(num_runs)
@@ -193,4 +201,4 @@ for run in range(num_runs):
 end_time = time.time()
 elapsed_time = end_time - start_time
 current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-save_data_to_csv(accuracy_distributions, contribution_distributions, chosen_users_over_time, num_users, num_timeframes, args, current_time, start_time, elapsed_time, end_time, num_runs, seeds_for_avg, num_send)
+save_data_to_csv(accuracy_distributions, contribution_distributions, chosen_users_over_time, expected_gradient_magnitude, num_users, num_timeframes, args, current_time, start_time, elapsed_time, end_time, num_runs, seeds_for_avg, num_send)
