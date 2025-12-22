@@ -15,14 +15,14 @@ start_time = time.time()
 # Simulate command-line arguments
 sys.argv = [
     'placeholder_script_name',
-    '--learning_rate_client', '0.01',
-    '--learning_rate_server', '0.01',
+    '--learning_rate_client', '0.01',   #for adam 0.01, #for sgd 0.01
+    '--learning_rate_server', '0.1',  #for adam 0.001, #for sgd 0.1
     '--epochs', '1',
     '--batch_size', '400',
-    '--num_users', '100',
+    '--num_users', '1',
     '--fraction', '1',
-    '--num_timeframes', '10000',
-    '--user_data_size', '500',
+    '--num_timeframes', '100',
+    '--user_data_size', '50000',
     '--seeds', '56', #'3', #, '29', '85', '65',
     '--num_runs', '1',
     '--selected_mode', 'async_asymp_EI',
@@ -32,6 +32,8 @@ sys.argv = [
     '--theta_inner', '0.1',
     '--dirichlet_alpha', '0.5',
     '--data_mode', 'CIFAR',
+    '--unit_gradients', '0',
+    '--adam', '0'
 ]
 
 # Command-line arguments
@@ -53,6 +55,8 @@ parser.add_argument('--bufferLimit', type=int, default=1,help='Buffer size limit
 parser.add_argument('--theta_inner', type=float, default=0.9,help='Theta coeffcient for inner product test')
 parser.add_argument('--dirichlet_alpha', type=float, default=0.5,help='Alpha coeffcient for dirichlet distribution')
 parser.add_argument('--data_mode', type=str, default='CIFAR', help='Dataset mode: MNIST or CIFAR')
+parser.add_argument('--unit_gradients', type=int, default=0, help='Whether to use unit gradients 0=False, 1=True')
+parser.add_argument('--adam', type=int, default=0, help='Whether to use FedAdam optimizer 0=False, 1=True')
 
 args = parser.parse_args()
 
@@ -74,6 +78,8 @@ bufferLimit = args.bufferLimit
 theta_inner = args.theta_inner
 dirichlet_alpha = args.dirichlet_alpha
 data_mode = args.data_mode
+unit_gradients =  False if args.unit_gradients == 0 else True
+adam = False if args.adam == 0 else True
 
 # Device configuration
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -150,7 +156,7 @@ for run in range(num_runs):
         fl_system = FederatedLearning(
             selected_mode, num_users, device,
             cos_similarity, model, TrainSetUsers, epochs, optimizer, criterion, fraction,
-            testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner
+            testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner, unit_gradients, adam
             )
 
         for timeframe in range(num_timeframes):

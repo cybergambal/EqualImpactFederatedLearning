@@ -45,8 +45,10 @@ def get_data_loaders(data_mode, batch_size, num_users):
         trainset.targets = torch.Tensor(trainset.targets).long()
         testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform2)
 
+    num_cores = os.cpu_count()
+    num_workers = min(8, num_cores) if num_cores else 0
 
-    data_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=24)
+    data_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     params = {
         "data_distribution_name": "iid",
         #"distribution_parameter": dirichlet_alpha,
@@ -56,7 +58,7 @@ def get_data_loaders(data_mode, batch_size, num_users):
     }
     distributor = DataDistributor(params)
     TrainSetUsers = distributor.split_data()
-    testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=24)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     print(len(trainset), "training samples loaded.")
     assert len(trainset) >= num_users * (len(trainset) // num_users), "Dataset too small for requested user allocation!"
