@@ -19,10 +19,9 @@ sys.argv = [
     '--learning_rate_server', '0.1',  #for adam 0.001, #for sgd 0.1
     '--epochs', '1',
     '--batch_size', '400',
-    '--num_users', '1',
+    '--num_users', '100',
     '--fraction', '1',
     '--num_timeframes', '100',
-    '--user_data_size', '50000',
     '--seeds', '56', #'3', #, '29', '85', '65',
     '--num_runs', '1',
     '--selected_mode', 'async_asymp_EI',
@@ -46,7 +45,6 @@ parser.add_argument('--num_users', type=int, default=10, help='Number of users i
 parser.add_argument('--fraction', type=float, nargs='+', default=[0.1], help='Fraction for top-k sparsification')
 parser.add_argument('--num_timeframes', type=int, default=15, help='Number of timeframes for simulation')
 parser.add_argument('--seeds', type=int, nargs='+', default=[85, 12, 29], help='Random seeds for averaging results')
-parser.add_argument('--user_data_size', type=int, default=2000, help='Number of samples each user gets')
 parser.add_argument('--num_runs', type=int, default=5,help='Number of simulations')
 parser.add_argument('--selected_mode', type=str, default='async_Inner',help='Which setting we are using: genie_aided, vanilla, user_selection_cos, user_selection_cos_dis, user_selection_acc, user_selection_acc_increment, user_selection_aog, user_selection_norm')
 parser.add_argument('--cos_similarity', type=int, default=2,help='What type of cosine similarity we want to test: cos2 = 2, cos4 = 4, ...')
@@ -69,7 +67,6 @@ num_users = args.num_users
 fraction = args.fraction
 num_timeframes = args.num_timeframes
 seeds_for_avg = args.seeds
-user_data_size = args.user_data_size
 num_runs = args.num_runs
 selected_mode = args.selected_mode
 train_mode = args.train_mode

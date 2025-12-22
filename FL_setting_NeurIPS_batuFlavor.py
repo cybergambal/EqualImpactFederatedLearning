@@ -9,21 +9,19 @@ class FederatedLearning:
                     cos_similarity, model, TrainSetUsers, epochs, optimizer, criteron, fraction, 
                     testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner, unit_gradients, adam):
         
-        #Gradients at users
-        self.grad_per_user = [[torch.zeros_like(param).to(device) for param in model.parameters()] for _ in range(num_users)]
-
+        # Device configuration
+        self.device = device
+        
         #Sparse gradients of users 
-        self.sparse_gradient = [[torch.zeros_like(param).to(device) for param in model.parameters()] for _ in range(num_users)]
-
+        self.sparse_gradient = [[torch.zeros_like(param).to("cpu") for param in model.parameters()] for _ in range(num_users)]
 
         #Weights in each user 
-        self.w_user = [[param.data.clone() for param in model.parameters()] for _ in range(num_users)]
+        self.w_user = [[param.data.clone().to("cpu") for param in model.parameters()] for _ in range(num_users)]
 
-        self.w_global = [param.data.clone() for param in model.parameters()]
+        self.w_global = [param.data.clone().to(self.device) for param in model.parameters()]
         
         self.mode = mode
         self.num_users = num_users
-        self.device = device
         self.cos_similarity = cos_similarity
         self.model = model
         self.TrainSetUsers = TrainSetUsers 
@@ -32,14 +30,13 @@ class FederatedLearning:
         self.criteron = criteron
         self.fraction = fraction
         self.testloader = testloader
-        self.UserAgeUL = torch.ones(self.num_users, 1).to(device)
-        self.UserAgeDL = torch.ones(self.num_users, 1).to(device) 
-        self.UserAgeMemory = torch.zeros(self.num_users, 1).to(device)
+        self.UserAgeUL = torch.ones(self.num_users, 1).to("cpu")
+        self.UserAgeDL = torch.ones(self.num_users, 1).to("cpu") 
+        self.UserAgeMemory = torch.zeros(self.num_users, 1).to("cpu")
         self.selected_users_UL = None
-        self.allOnes = torch.ones(self.num_users, 1).to(device)
-        self.lastAge = torch.zeros(self.num_users, 1).to(device)
+        self.allOnes = torch.ones(self.num_users, 1).to("cpu")
+        self.lastAge = torch.zeros(self.num_users, 1).to("cpu")
         self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
-        self.lastSum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
         self.selected_users = None
         self.keepProbAvail = keepProbAvail
         self.keepProbNotAvail = keepProbNotAvail
@@ -205,8 +202,9 @@ class FederatedLearning:
         for user_id in list_users:
 
             # Reset model weights to the initial weights before each user's local training
+            model = [param.data.clone().to(self.device) for param in self.w_user[user_id]]
             with torch.no_grad():
-                for param, saved in zip(self.model.parameters(), self.w_user[user_id]):
+                for param, saved in zip(self.model.parameters(), model):
                     param.copy_(saved) 
             torch.cuda.empty_cache()
 
@@ -234,11 +232,10 @@ class FederatedLearning:
 
                         self.optimizer.step()
         
-            w_new = [param.data.clone() for param in self.model.parameters()]
-            gradient_diff = self.calculate_gradient_difference(self.w_user[user_id], w_new)
-            self.grad_per_user[user_id] = gradient_diff
-
-            self.sparse_gradient[user_id] = self.top_k_sparsificate_model_weights(gradient_diff, self.fraction[0]) 
+            w_new = [param.data.clone().to(self.device) for param in self.model.parameters()]
+            gradient_diff = self.calculate_gradient_difference(model, w_new)
+            sparse_gradient = self.top_k_sparsificate_model_weights(gradient_diff, self.fraction[0]) 
+            self.sparse_gradient[user_id] = [sg.to("cpu") for sg in sparse_gradient]
 
     def aggregate_gradients(self, tempUserAgeDL):
 
@@ -265,7 +262,8 @@ class FederatedLearning:
             self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
             for user in self.selected_users_UL:
                 self.contribution[user] += 1/tempUserAgeDL[user].cpu().item()
-                self.sum_terms = [self.sum_terms[j] + self.sparse_gradient[user][j]/(tempUserAgeDL[user]) for j in range(len(self.sum_terms))] 
+                temp_gradient = [sg.to(self.device) for sg in self.sparse_gradient[user]]
+                self.sum_terms = [self.sum_terms[j] + temp_gradient[j]/(tempUserAgeDL[user]) for j in range(len(self.sum_terms))] 
             
             # Update global model
             self.w_global = [self.w_global[j] + self.learning_rate_server * self.sum_terms[j]/len(self.selected_users_UL) for j in range(len(self.sum_terms))] 
@@ -293,7 +291,7 @@ class FederatedLearning:
         self.train_users(self.selected_users_UL.tolist())
         
 
-        tempUserAgeDL = self.UserAgeDL.clone()
+        tempUserAgeDL = self.UserAgeDL.clone().to(self.device)
         #Available users get the new global model
         for user in self.intermittentUsers:
             self.w_user[user] = [w.clone() for w in self.w_global]
@@ -333,20 +331,14 @@ class FederatedLearning:
         print(f"Selected User in UL: {self.selected_users_UL}")
         self.train_users(self.selected_users_UL.tolist())
 
-        #Sum of trained gradients
-        self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
-        for user in self.selected_users_UL:
-            self.UserAgeUL[user] = 0
-            self.contribution[user] += 1/self.UserAgeDL[user].cpu().item()
-            self.sum_terms = [self.sum_terms[j] + self.sparse_gradient[user][j]/(self.UserAgeDL[user]) for j in range(len(self.sum_terms))] 
-        
+        tempUserAgeDL = self.UserAgeDL.clone().to(self.device)
         #Available users get the new global model
         for user in self.intermittentUsers:
             self.w_user[user] = [w.clone() for w in self.w_global]
             self.UserAgeDL[user] = 0
 
 
-        self.aggregate_gradients() 
+        self.aggregate_gradients(tempUserAgeDL) 
 
         self.UserAgeDL = self.UserAgeDL + self.allOnes
 
@@ -357,8 +349,8 @@ class FederatedLearning:
         for user_id in range(self.num_users):
             for user_id2 in range(user_id, self.num_users):
                 # Flatten gradients into 1D vectors
-                user_grad_vector = torch.cat([g.view(-1) for g in self.grad_per_user[user_id]])
-                global_grad_vector = torch.cat([g.view(-1) for g in self.grad_per_user[user_id2]])
+                user_grad_vector = torch.cat([g.view(-1) for g in self.sparse_gradient[user_id]])
+                global_grad_vector = torch.cat([g.view(-1) for g in self.sparse_gradient[user_id2]])
 
                 # Compute cosine similarity
                 lp_cos_val = self.lp_cosine_similarity(user_grad_vector, global_grad_vector, p = self.cos_similarity)
