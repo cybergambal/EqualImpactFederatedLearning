@@ -191,6 +191,8 @@ for run in range(num_runs):
         
         for user in range(num_users):
             contribution_distributions[run][seed_index][user] = fl_system.contribution[user]
+        for user in range(num_users):
+            expected_gradient_magnitude[run][seed_index][user] = fl_system.expected_gradient_magnitude[user]
         num_send = fl_system.num_send
         del model
         del new_weights
