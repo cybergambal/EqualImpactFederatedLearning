@@ -7,7 +7,8 @@ import time
 class FederatedLearning:
     def __init__(self, mode, num_users, device, 
                     cos_similarity, model, TrainSetUsers, epochs, optimizer, criteron, fraction, 
-                    testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner, unit_gradients, adam):
+                    testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, 
+                    bufferLimit, theta_inner, unit_gradients, adam, temp):
         
         #Arguements
         self.learning_rate_server = learning_rate_server
@@ -64,6 +65,7 @@ class FederatedLearning:
         self.nu_orthogonal = 5.67 #tan(80)
 
         #Policy calculation
+        self.temperature = temp
         self.pi = self.calculate_policy()
         
         # Tracking variables
@@ -107,6 +109,7 @@ class FederatedLearning:
         pi = np.zeros((self.num_users))
         r = np.zeros((self.num_users)) 
         pon = np.zeros((self.num_users))
+        pi_cont = np.zeros((self.num_users))
 
         for iii in range(self.num_users):
             P10 = 1 - self.keepProbAvail[iii]
@@ -124,12 +127,31 @@ class FederatedLearning:
             r[iii] = numerator / denominator
             pon[iii] = P01/(P01 + P10)
 
+
         inverseSum = np.sum(r**(-1))
         pi = (r**(-1) / inverseSum)
         print(f"pi: {pi}")
 
+        SortFunc = lambda a : a[1]
+
+        rTemp = list(enumerate(list(r)))
+        rTemp.sort(key=SortFunc, reverse=True)
+        cap = self.bufferLimit
+        for iii in range(self.num_users):
+            user = rTemp[iii]
+
+            if user[1] < cap:
+                pi_cont[user[0]] = 1
+                cap -= user[1]
+            else:
+                pi_cont[user[0]] = cap/user[1]
+                break 
+
+        print(f"pi_cont: {pi_cont}")
+
         pi = pi / np.dot(pon, pi) * self.bufferLimit
 
+        pi = pi_cont * (1 - self.temperature) + pi * self.temperature
 
         return pi
 

@@ -10,7 +10,7 @@ import torchvision.transforms as transforms
 
 from byzfl import DataDistributor
 
-def get_data_loaders(data_mode, batch_size, num_users):
+def get_data_loaders(data_mode, batch_size, num_users, dirichlet_alpha):
     """
     Get data loaders for training and testing datasets.
     
@@ -46,12 +46,12 @@ def get_data_loaders(data_mode, batch_size, num_users):
         testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform2)
 
     num_cores = os.cpu_count()
-    num_workers = min(8, num_cores) if num_cores else 0
+    num_workers = min(4, num_cores) if num_cores else 0
 
     data_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     params = {
-        "data_distribution_name": "iid",
-        #"distribution_parameter": dirichlet_alpha,
+        "data_distribution_name": "dirichlet_niid",
+        "distribution_parameter": dirichlet_alpha,
         "nb_honest": num_users,
         "data_loader": data_loader,
         "batch_size": batch_size,
@@ -61,6 +61,7 @@ def get_data_loaders(data_mode, batch_size, num_users):
     testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     print(len(trainset), "training samples loaded.")
+    print(len(TrainSetUsers[0].dataset), "samples allocated to each user.")
     assert len(trainset) >= num_users * (len(trainset) // num_users), "Dataset too small for requested user allocation!"
 
     return TrainSetUsers, testloader

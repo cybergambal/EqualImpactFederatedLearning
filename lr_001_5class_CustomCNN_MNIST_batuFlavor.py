@@ -19,12 +19,12 @@ sys.argv = [
     '--learning_rate_server', '0.1',  #for adam 0.001, #for sgd 0.1
     '--epochs', '1',
     '--batch_size', '400',
-    '--num_users', '1',
+    '--num_users', '100',
     '--fraction', '1',
-    '--num_timeframes', '100',
+    '--num_timeframes', '10000',
     '--seeds', '56', #'3', #, '29', '85', '65',
     '--num_runs', '1',
-    '--selected_mode', 'async_asymp_age',
+    '--selected_mode', 'async_asymp_EI',
     '--cos_similarity', '4',
     '--train_mode', 'all',
     '--bufferLimit', '1',
@@ -32,7 +32,8 @@ sys.argv = [
     '--dirichlet_alpha', '0.5',
     '--data_mode', 'CIFAR',
     '--unit_gradients', '0',
-    '--adam', '0'
+    '--adam', '0',
+    '--temp', '0.3'
 ]
 
 # Command-line arguments
@@ -55,6 +56,7 @@ parser.add_argument('--dirichlet_alpha', type=float, default=0.5,help='Alpha coe
 parser.add_argument('--data_mode', type=str, default='CIFAR', help='Dataset mode: MNIST or CIFAR')
 parser.add_argument('--unit_gradients', type=int, default=0, help='Whether to use unit gradients 0=False, 1=True')
 parser.add_argument('--adam', type=int, default=0, help='Whether to use FedAdam optimizer 0=False, 1=True')
+parser.add_argument('--temp', type=float, default=0.3, help='Temperature parameter [0,1] for how contribution is user selection (higher temp -> more uniform)')
 
 args = parser.parse_args()
 
@@ -77,9 +79,10 @@ dirichlet_alpha = args.dirichlet_alpha
 data_mode = args.data_mode
 unit_gradients =  False if args.unit_gradients == 0 else True
 adam = False if args.adam == 0 else True
+temp = args.temp
 
 # Device configuration
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 torch.backends.cuda.matmul.allow_tf32 = True
 print(f"\n{'*' * 50}\n*** Using device: {device} ***\n{'*' * 50}\n")
 
@@ -130,7 +133,7 @@ for run in range(num_runs):
         torch.manual_seed(seed)
         
         # Load data
-        TrainSetUsers, testloader = get_data_loaders(data_mode, batch_size, num_users)
+        TrainSetUsers, testloader = get_data_loaders(data_mode, batch_size, num_users, dirichlet_alpha)
 
         print(f"************ Seed {seed_index} ************")
         
@@ -161,7 +164,8 @@ for run in range(num_runs):
         fl_system = FederatedLearning(
             selected_mode, num_users, device,
             cos_similarity, model, TrainSetUsers, epochs, optimizer, criterion, fraction,
-            testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, bufferLimit, theta_inner, unit_gradients, adam
+            testloader, learning_rate_server, train_mode, keepProbAvail, keepProbNotAvail, 
+            bufferLimit, theta_inner, unit_gradients, adam, temp
             )
 
         for timeframe in range(num_timeframes):
