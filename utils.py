@@ -274,10 +274,23 @@ def save_data_to_csv(accuracy_distributions, contribution_distributions, chosen_
                     'ExpectedGradientMagnitude': expected_gradient_magnitude[run][seed_index][user],
                 })
 
+    chosen_users_over_time_data = []
+    for run in range(num_runs):
+        for seed_index, seed in enumerate(seeds_for_avg):
+            for timeframe in range(num_timeframes):
+                for user in range(num_users):
+                    chosen_users_over_time_data.append({
+                        'Run': run,
+                        'Seed': seed,
+                        'Timeframe': timeframe + 1,
+                        'User': user,
+                        'ChosenUser': chosen_users_over_time[run][seed_index][timeframe][user],
+                    })
+
     final_results_df = pd.DataFrame(final_results)
     contribution_data_df = pd.DataFrame(contribution_data)
     expected_gradient_data_df = pd.DataFrame(expected_gradient_data)
-    chosen_users_over_time_df = pd.DataFrame(chosen_users_over_time)
+    chosen_users_over_time_df = pd.DataFrame(chosen_users_over_time_data)
     file_path = os.path.join(save_dir, 'final_results.csv')
     final_results_df.to_csv(file_path, index=False)
     contribution_file_path = os.path.join(save_dir, 'contribution_data.csv')

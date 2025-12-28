@@ -109,7 +109,7 @@ class FederatedLearning:
         pi = np.zeros((self.num_users))
         r = np.zeros((self.num_users)) 
         pon = np.zeros((self.num_users))
-        pi_cont = np.zeros((self.num_users))
+        pi_cont = np.hstack((np.zeros((self.num_users//2)), np.ones((self.num_users - self.num_users//2))))
 
         for iii in range(self.num_users):
             P10 = 1 - self.keepProbAvail[iii]
@@ -132,21 +132,22 @@ class FederatedLearning:
         pi = (r**(-1) / inverseSum)
         print(f"pi: {pi}")
 
-        SortFunc = lambda a : a[1]
+        # SortFunc = lambda a : a[1]
+        # rTemp = list(enumerate(list(r)))
+        # rTemp.sort(key=SortFunc, reverse=True)
+        # cap = self.bufferLimit
+        # for iii in range(self.num_users):
+        #     user = rTemp[iii]
 
-        rTemp = list(enumerate(list(r)))
-        rTemp.sort(key=SortFunc, reverse=True)
-        cap = self.bufferLimit
-        for iii in range(self.num_users):
-            user = rTemp[iii]
+        #     if user[1] < cap:
+        #         pi_cont[user[0]] = 1
+        #         cap -= user[1]
+        #     else:
+        #         pi_cont[user[0]] = cap/user[1]
+        #         break 
 
-            if user[1] < cap:
-                pi_cont[user[0]] = 1
-                cap -= user[1]
-            else:
-                pi_cont[user[0]] = cap/user[1]
-                break 
-
+        pi_cont = pi_cont / np.dot(pon, pi_cont) * self.bufferLimit
+        
         print(f"pi_cont: {pi_cont}")
 
         pi = pi / np.dot(pon, pi) * self.bufferLimit
