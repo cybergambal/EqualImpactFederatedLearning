@@ -29,11 +29,10 @@ sys.argv = [
     '--train_mode', 'all',
     '--bufferLimit', '1',
     '--theta_inner', '0.1',
-    '--dirichlet_alpha', '0.5',
     '--data_mode', 'CIFAR',
     '--unit_gradients', '0',
     '--adam', '0',
-    '--temp', '0.3'
+    '--temp', '0'
 ]
 
 # Command-line arguments
@@ -52,7 +51,6 @@ parser.add_argument('--cos_similarity', type=int, default=2,help='What type of c
 parser.add_argument('--train_mode', type=str, default='all',help='Which part of network we are training: all, dense, conv')
 parser.add_argument('--bufferLimit', type=int, default=1,help='Buffer size limit for how many users to wait before aggregation')
 parser.add_argument('--theta_inner', type=float, default=0.9,help='Theta coeffcient for inner product test')
-parser.add_argument('--dirichlet_alpha', type=float, default=0.5,help='Alpha coeffcient for dirichlet distribution')
 parser.add_argument('--data_mode', type=str, default='CIFAR', help='Dataset mode: MNIST or CIFAR')
 parser.add_argument('--unit_gradients', type=int, default=0, help='Whether to use unit gradients 0=False, 1=True')
 parser.add_argument('--adam', type=int, default=0, help='Whether to use FedAdam optimizer 0=False, 1=True')
@@ -75,7 +73,6 @@ train_mode = args.train_mode
 cos_similarity = args.cos_similarity
 bufferLimit = args.bufferLimit
 theta_inner = args.theta_inner
-dirichlet_alpha = args.dirichlet_alpha
 data_mode = args.data_mode
 unit_gradients =  False if args.unit_gradients == 0 else True
 adam = False if args.adam == 0 else True
@@ -133,7 +130,7 @@ for run in range(num_runs):
         torch.manual_seed(seed)
         
         # Load data
-        TrainSetUsers, testloader = get_data_loaders(data_mode, batch_size, num_users, dirichlet_alpha)
+        TrainSetUsers, testloader = get_data_loaders(data_mode, batch_size, num_users)
 
         print(f"************ Seed {seed_index} ************")
         

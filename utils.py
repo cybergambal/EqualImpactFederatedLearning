@@ -10,7 +10,7 @@ import torchvision.transforms as transforms
 
 from byzfl import DataDistributor
 
-def get_data_loaders(data_mode, batch_size, num_users, dirichlet_alpha):
+def get_data_loaders(data_mode, batch_size, num_users):
     """
     Get data loaders for training and testing datasets.
     
@@ -49,15 +49,33 @@ def get_data_loaders(data_mode, batch_size, num_users, dirichlet_alpha):
     num_workers = min(4, num_cores) if num_cores else 0
 
     data_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    params = {
-        "data_distribution_name": "dirichlet_niid",
-        "distribution_parameter": dirichlet_alpha,
-        "nb_honest": num_users,
+    
+    labels_group1 = [0,1,2,3,4]
+    labels_group2 = [5,6,7,8,9]
+
+    indices_group1 = [i for i, label in enumerate(trainset.targets) if label in labels_group1]
+    indices_group2 = [i for i, label in enumerate(trainset.targets) if label in labels_group2]
+
+    trainset_group1 = torch.utils.data.Subset(trainset, indices_group1)
+    trainset_group2 = torch.utils.data.Subset(trainset, indices_group2)
+    
+    params_group1 = {
+        "data_distribution_name": "iid",
+        "nb_honest": num_users//2,
         "data_loader": data_loader,
         "batch_size": batch_size,
     }
-    distributor = DataDistributor(params)
-    TrainSetUsers = distributor.split_data()
+
+    params_group2 = {
+        "data_distribution_name": "iid",
+        "nb_honest": num_users//2,
+        "data_loader": data_loader,
+        "batch_size": batch_size,
+    }
+    distributor_group1 = DataDistributor(params_group1)
+    distributor_group2 = DataDistributor(params_group2)
+    TrainSetUsers = distributor_group1.split_data()
+    TrainSetUsers.extend(distributor_group2.split_data())
     testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     print(len(trainset), "training samples loaded.")
