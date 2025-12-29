@@ -24,7 +24,7 @@ sys.argv = [
     '--num_timeframes', '10000',
     '--seeds', '56', #'3', #, '29', '85', '65',
     '--num_runs', '1',
-    '--selected_mode', 'async_asymp_EI',
+    '--selected_mode', 'async_asymp_age',
     '--cos_similarity', '4',
     '--train_mode', 'all',
     '--bufferLimit', '1',

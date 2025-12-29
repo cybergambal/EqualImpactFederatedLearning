@@ -62,14 +62,14 @@ def get_data_loaders(data_mode, batch_size, num_users):
     params_group1 = {
         "data_distribution_name": "iid",
         "nb_honest": num_users//2,
-        "data_loader": data_loader,
+        "data_loader": trainset_group1,
         "batch_size": batch_size,
     }
 
     params_group2 = {
         "data_distribution_name": "iid",
         "nb_honest": num_users//2,
-        "data_loader": data_loader,
+        "data_loader": trainset_group2,
         "batch_size": batch_size,
     }
     distributor_group1 = DataDistributor(params_group1)
