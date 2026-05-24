@@ -81,13 +81,17 @@ class FederatedLearning:
         self.cosine_similarity_type = cos_similarity_type
 
         # Adam parameters
-        if self.adam: 
+        if self.adam:
             self.beta1 = 0.9
             self.beta2 = 0.99
-            self.tau = 1e-3 
+            self.tau = 1e-3
 
             self.adamMomentum = [torch.zeros_like(param).to(self.device) for param in self.w_global]
             self.adamVariance = [torch.full_like(param, self.tau**2).to(self.device) for param in self.w_global]
+
+        # FEDFresh initialisation: compute ĝ_u = g_u(w_0) for all users, set τ_u = 1
+        if self.mode == 'async_asymp_EI':
+            self._initialize_gradients()
 
     def lp_cosine_similarity(self, x: torch.Tensor, y: torch.Tensor, p: int = 2) -> float:
         """
@@ -132,55 +136,100 @@ class FederatedLearning:
 
         return chosen_list
     
+    def compute_pi_unif(self, r, pon):
+        """Fair uniform participation policy via bisection.
+
+        Finds c s.t. p_u^unif = min(1, c/R_u) with sum_u P_on_u * p_u^unif = K.
+        This equalises asymptotic contribution rates (R_u * p_u = const for unclamped users).
+        Naively normalising 1/R_u then clipping undershoots K whenever some users hit p=1.
+        """
+        K = float(self.bufferLimit)
+        valid = r > 1e-12
+
+        if np.dot(pon, np.ones(self.num_users)) <= K:
+            return np.ones(self.num_users)
+
+        def load(c):
+            p = np.where(valid, np.minimum(1.0, c / r), 0.0)
+            return np.dot(pon, p)
+
+        # load is increasing in c; bisect to find c* s.t. load(c*) = K
+        c_lo, c_hi = 0.0, r.max() * 1e9
+        for _ in range(200):
+            c_mid = (c_lo + c_hi) / 2.0
+            if load(c_mid) < K:
+                c_lo = c_mid
+            else:
+                c_hi = c_mid
+
+        c_star = (c_lo + c_hi) / 2.0
+        return np.where(valid, np.minimum(1.0, c_star / r), 0.0)
+
+    def compute_pi_eff(self, r, pon, alpha=1.0):
+        """Waterfilling solution for the staleness-minimizing efficient policy (Section IV.D).
+
+        Solves: min sum_u R_u * U_alpha(p_u^eff)  s.t.  sum_u P_on_u * p_u^eff <= K
+        where gamma_u = R_u / P_on_u is the reward-to-cost ratio.
+        Solution: p_u^eff = min(1, (gamma_u / mu*)^{1/alpha}), mu* found by bisection.
+        """
+        K = float(self.bufferLimit)
+        valid = pon > 1e-12
+        gamma = np.where(valid, r / pon, 0.0)
+
+        # If all users can transmit freely, set p=1
+        if np.dot(pon, np.ones(self.num_users)) <= K:
+            return np.ones(self.num_users)
+
+        def load(nu):
+            p = np.where(valid, np.minimum(1.0, (gamma / nu) ** (1.0 / alpha)), 0.0)
+            return np.dot(pon, p)
+
+        # Bisection: load is decreasing in nu; find nu* s.t. load(nu*) = K
+        nu_lo, nu_hi = 1e-12, gamma.max() * 1e9
+        for _ in range(200):
+            nu_mid = (nu_lo + nu_hi) / 2.0
+            if load(nu_mid) > K:
+                nu_lo = nu_mid
+            else:
+                nu_hi = nu_mid
+
+        nu_star = (nu_lo + nu_hi) / 2.0
+        pi_eff = np.where(valid, np.minimum(1.0, (gamma / nu_star) ** (1.0 / alpha)), 0.0)
+        return pi_eff
+
     def calculate_policy(self):
-        pi = np.zeros((self.num_users))
-        r = np.zeros((self.num_users)) 
-        pon = np.zeros((self.num_users))
-        pi_cont = np.hstack((np.zeros((self.num_users//2)), np.ones((self.num_users - self.num_users//2))))
+        """Compute FEDFresh participation probabilities (Eq. 21):
+            p_u(lambda) = lambda * pi_unif + (1 - lambda) * pi_eff
+        where lambda = self.temperature.
+        """
+        r = np.zeros(self.num_users)
+        pon = np.zeros(self.num_users)
 
         for iii in range(self.num_users):
-            P10 = 1 - self.keepProbAvail[iii]
-            P01 = 1 - self.keepProbNotAvail[iii]
-            
-            # Numerator
+            P10 = 1 - self.keepProbAvail[iii]   # P_{1,0}: available -> unavailable
+            P01 = 1 - self.keepProbNotAvail[iii] # P_{0,1}: unavailable -> available
+
+            # R_u: asymptotic average inverse-staleness rate (renewal reward, d(tau)=1/tau)
             term1 = (1 - P10)
             term2 = (P10 * P01) / (1 - P01)
             term3 = (P10 * P01) / ((1 - P01) ** 2) * np.log(P01)
             numerator = term1 - term2 - term3
-            
-            # Denominator
             denominator = 1 + P10 / P01
-            
             r[iii] = numerator / denominator
-            pon[iii] = P01/(P01 + P10)
+            pon[iii] = P01 / (P01 + P10)
 
+        # pi_unif: fair uniform policy — p_u^unif = min(1, c/R_u) via bisection
+        pi_unif = self.compute_pi_unif(r, pon)
 
-        inverseSum = np.sum(r**(-1))
-        pi = (r**(-1) / inverseSum)
+        # pi_eff: staleness-minimising efficient policy via waterfilling (alpha=1, log utility)
+        pi_eff = self.compute_pi_eff(r, pon, alpha=1.0)
 
-        # SortFunc = lambda a : a[1]
-        # rTemp = list(enumerate(list(r)))
-        # rTemp.sort(key=SortFunc, reverse=True)
-        # cap = self.bufferLimit
-        # for iii in range(self.num_users):
-        #     user = rTemp[iii]
+        # FEDFresh blend: p_u(lambda) = lambda * pi_unif + (1-lambda) * pi_eff  (Eq. 21)
+        pi = self.temperature * pi_unif + (1.0 - self.temperature) * pi_eff
 
-        #     if user[1] < cap:
-        #         pi_cont[user[0]] = 1
-        #         cap -= user[1]
-        #     else:
-        #         pi_cont[user[0]] = cap/user[1]
-        #         break 
-
-        pi_cont = pi_cont / np.dot(pon, pi_cont) * self.bufferLimit
-        
-        print(f"pi_cont: {pi_cont}")
-
-        pi = pi / np.dot(pon, pi) * self.bufferLimit
-        print(f"pi: {pi}")
-
-        pi = pi_cont * (1 - self.temperature) + pi * self.temperature
-        print(f"Overall pi: {pi}")
+        print(f"pi_unif: {pi_unif}")
+        print(f"pi_eff:  {pi_eff}")
+        print(f"FEDFresh pi (lambda={self.temperature}): {pi}")
 
         return pi
 
@@ -293,6 +342,11 @@ class FederatedLearning:
             sparse_gradient = self.top_k_sparsificate_model_weights(gradient_diff, self.fraction[0]) 
             self.sparse_gradient[user_id] = [sg.to("cpu") for sg in sparse_gradient]
 
+    def _initialize_gradients(self):
+        """FEDFresh initialisation (Algorithm 1, line 2): compute g_u(w_0) for every user."""
+        print("FEDFresh init: computing g_u(w_0) for all users...")
+        self.train_users(list(range(self.num_users)))
+
     def aggregate_gradients(self, tempUserAgeDL):
 
         # Normalize gradients if unit_gradients is set
@@ -334,40 +388,51 @@ class FederatedLearning:
             self.w_global = [self.w_global[j] + self.learning_rate_server * self.sum_terms[j]/len(self.selected_users_UL) for j in range(len(self.sum_terms))] 
         
     def simulate_async_Asymp_EI(self, run, seed_index, timeframe):
-        """Handles both Slotted ALOHA and standard user processing."""
+        """FEDFresh algorithm (Algorithm 1 in the paper).
 
-        #New Available Users
+        Each round has three phases:
+          Phase 1 — Transmission: available users independently transmit their
+                    *previously stored* gradient ĝ_u with probability p_u(λ).
+          Phase 2 — Local gradient refresh: ALL available users receive the
+                    updated global model, compute a fresh gradient g_u(w_t),
+                    and store it as ĝ_u; unavailable users increment τ_u.
+          Phase 3 — Server aggregation: w_{t+1} = w_t - η * Σ d(τ_k) ĝ_k
+                    with d(τ) = 1/τ  (handled inside aggregate_gradients).
+        """
+
+        # Advance Markov chain → get available users S_t
         self.stepState()
-        if (len(self.intermittentUsers) == 0):
-            print("No users available passing")
+        if len(self.intermittentUsers) == 0:
+            print("No users available, skipping round")
+            self.UserAgeDL = self.UserAgeDL + self.allOnes
             return self.w_global
-        print(f"Available Users = {self.intermittentUsers}")
+        print(f"Available Users S_t = {self.intermittentUsers}")
 
-        #Choose available users according to their p_u
-        tempPi = self.pi[self.intermittentUsers].flatten()            
+        # ── Phase 1: Transmission ──────────────────────────────────────────────
+        # Each available user decides to transmit the stored ĝ_u with prob p_u(λ)
+        tempPi = self.pi[self.intermittentUsers].flatten()
         bernoulli_flips = np.random.rand(len(self.intermittentUsers)) < tempPi
         self.selected_users_UL = self.intermittentUsers[bernoulli_flips]
         self.num_send += len(self.selected_users_UL)
-        if (len(self.selected_users_UL) == 0):
-            print("No user transmits")
-            return self.w_global
-        print(f"Transmitting Users: {self.selected_users_UL.tolist()}")
-        
-        #Obtain gradient from users that transmit
-        self.train_users(self.selected_users_UL.tolist())
-        
+        print(f"Transmitting Users K_t = {self.selected_users_UL.tolist()}")
 
-        tempUserAgeDL = self.UserAgeDL.clone().to(self.device)
+        # ── Phase 3: Server aggregation (uses stored ĝ_u, before Phase 2 refresh)
+        # Capture τ_k values now — they will be reset for available users in Phase 2
+        if len(self.selected_users_UL) > 0:
+            tempUserAgeDL = self.UserAgeDL.clone().to(self.device)
+            self.aggregate_gradients(tempUserAgeDL)
 
-        #Available users get the new global model
+        # ── Phase 2: Local gradient refresh ────────────────────────────────────
+        # All available users receive the broadcast w_t, compute g_u(w_t), reset τ_u = 1
         for user in self.intermittentUsers:
             self.w_user[user] = [w.clone() for w in self.w_global]
-            self.UserAgeDL[user] = 0
+            self.UserAgeDL[user] = 0  # becomes 1 after +allOnes below
 
-        self.aggregate_gradients(tempUserAgeDL)
-        
+        self.train_users(self.intermittentUsers.tolist())  # ALL available, not just K_t
+
+        # Update ages: available users → τ = 1; unavailable users → τ += 1
         self.UserAgeDL = self.UserAgeDL + self.allOnes
-        
+
         return self.w_global
     
     def simulate_async_Asymp_Age(self, run, seed_index, timeframe):
