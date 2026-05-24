@@ -200,31 +200,34 @@ class FederatedLearning:
         return chosen_list
 
     def calculate_true_gradient_magnitude(self):
-        # Reset model weights to the initial weights before each user's local training
+        """‖∇f(w_global)‖² on the full dataset via autograd. Model state preserved."""
+        saved_state = [p.data.clone() for p in self.model.parameters()]
+        self.model.eval()
         with torch.no_grad():
             for param, saved in zip(self.model.parameters(), self.w_global):
-                param.copy_(saved) 
-        torch.cuda.empty_cache()
+                param.copy_(saved)
 
-        # Retrieve the user's training data (combined from all memory cells)
-        Wholetrainloader = self.WholeTrainSet
-        local_optimizer = torch.optim.SGD(self.model.parameters(), lr=1.0)
-        
-        for epoch in range(self.epochs):
-            for image, label in Wholetrainloader:
-                local_optimizer.zero_grad(set_to_none=True)     
-                image, label = image.to(self.device), label.to(self.device)  
-                output = self.model(image)
-                loss = self.criteron(output, label)
-                loss.backward()
-                local_optimizer.step()
-                torch.cuda.empty_cache()
+        self.optimizer.zero_grad(set_to_none=True)
+        total_loss = torch.tensor(0.0, device=self.device)
+        total_samples = 0
+        for image, label in self.WholeTrainSet:
+            image, label = image.to(self.device), label.to(self.device)
+            out = self.model(image)
+            loss = self.criteron(out, label) * image.size(0)
+            total_loss = total_loss + loss
+            total_samples += image.size(0)
+        (total_loss / max(total_samples, 1)).backward()
+        grad_mag = float(sum(
+            (p.grad.detach() ** 2).sum().item()
+            for p in self.model.parameters() if p.grad is not None
+        ))
 
-        w_new = [param.data.clone().to(self.device) for param in self.model.parameters()]
-        gradient_diff = self.calculate_gradient_difference(self.w_global, w_new)
-        grad_mag = self.calculate_gradient_magnitude(gradient_diff)
+        with torch.no_grad():
+            for param, s in zip(self.model.parameters(), saved_state):
+                param.copy_(s)
+        self.model.train()
+
         print(f"True Gradient Magnitude: {grad_mag}")
-
         return grad_mag
     
     def calculate_policy(self):
@@ -414,28 +417,27 @@ class FederatedLearning:
         self.sum_terms = [torch.zeros_like(param).to(self.device) for param in self.w_global]
         for user in self.selected_users_UL:
             self.UserAgeUL[user] = 0
-            self.contribution[user] += np.sqrt(sum([torch.sum((g/tempUserAgeDL[user].item())**2).item() for g in self.sparse_gradient[user]]))
+            self.contribution[user] += np.sqrt(sum([torch.sum(g**2).item() for g in self.sparse_gradient[user]]))
             temp_gradient = [sg.to(self.device) for sg in self.sparse_gradient[user]]
             self.expected_gradient_magnitude[user] += np.sqrt(sum([torch.sum(g**2).item() for g in temp_gradient]))
-            self.sum_terms = [self.sum_terms[j] + temp_gradient[j]/(tempUserAgeDL[user]) for j in range(len(self.sum_terms))] 
-        
+            self.sum_terms = [self.sum_terms[j] + temp_gradient[j] for j in range(len(self.sum_terms))]
+
         if self.adam:
             # Adam update
-            self.adamMomentum = [self.beta1 * m + (1 - self.beta1) * (s / len(self.selected_users_UL)) for m, s in zip(self.adamMomentum, self.sum_terms)]
-            self.adamVariance = [self.beta2 * v + (1 - self.beta2) * ((s / len(self.selected_users_UL)) ** 2) for v, s in zip(self.adamVariance, self.sum_terms)]
+            self.adamMomentum = [self.beta1 * m + (1 - self.beta1) * (s / self.bufferLimit) for m, s in zip(self.adamMomentum, self.sum_terms)]
+            self.adamVariance = [self.beta2 * v + (1 - self.beta2) * ((s / self.bufferLimit) ** 2) for v, s in zip(self.adamVariance, self.sum_terms)]
 
-            self.lastGradient = [ self.learning_rate_server * self.adamMomentum[j] / (torch.sqrt(self.adamVariance[j]) + self.tau) for j in range(len(self.sum_terms))]
-            
+            self.lastGradient = [self.learning_rate_server * self.adamMomentum[j] / (torch.sqrt(self.adamVariance[j]) + self.tau) for j in range(len(self.sum_terms))]
             self.lastGradient = torch.cat([g.view(-1) for g in self.lastGradient]).t()
-            
+
             # Update global model
-            self.w_global = [self.w_global[j] + self.learning_rate_server * self.adamMomentum[j] / (torch.sqrt(self.adamVariance[j]) + self.tau) for j in range(len(self.sum_terms))] 
+            self.w_global = [self.w_global[j] + self.learning_rate_server * self.adamMomentum[j] / (torch.sqrt(self.adamVariance[j]) + self.tau) for j in range(len(self.sum_terms))]
         else:
-            self.lastGradient = [s / len(self.selected_users_UL) for s in self.sum_terms]
+            self.lastGradient = [s / self.bufferLimit for s in self.sum_terms]
             self.lastGradient = torch.cat([g.view(-1) for g in self.lastGradient]).t()
-            
+
             # Update global model
-            self.w_global = [self.w_global[j] + self.learning_rate_server * self.sum_terms[j]/len(self.selected_users_UL) for j in range(len(self.sum_terms))] 
+            self.w_global = [self.w_global[j] + self.learning_rate_server * self.sum_terms[j] / self.bufferLimit for j in range(len(self.sum_terms))] 
         
     def simulate_async_Asymp_EI(self, run, seed_index, timeframe):
         """Handles both Slotted ALOHA and standard user processing."""

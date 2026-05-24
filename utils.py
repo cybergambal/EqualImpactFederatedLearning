@@ -494,60 +494,78 @@ def calculate_true_gradient(device, w_current, model, WholeTrainSet, epochs, cri
     return gradient_diff
 
 def calculate_constants(num_users, device, w_global, model, TrainSetUsers, WholeTrainSetUsers, WholeTrainSet, epochs, optimizer, criterion):
-    
+    w_global_original = [w.clone() for w in w_global]
+
+    N_VAR_SAMPLES = 8   
+
     max_sigma_l = 0.0
     max_sigma_g = 0.0
     max_G = 0.0
 
     for user_id in range(num_users):
         print(user_id, end=' ')
-        cur_sigma_l = 0.0
-        iii = 0
 
-        # Reset model weights to the initial weights before each user's local training
         with torch.no_grad():
-            for param, saved in zip(model.parameters(), w_global):
-                param.copy_(saved) 
+            for param, saved in zip(model.parameters(), w_global_original):
+                param.copy_(saved)
         torch.cuda.empty_cache()
 
         model2 = copy.deepcopy(model).to(device)
 
-        # Retrieve the user's training data (combined from all memory cells)
+        whole_gradient_diff = calculate_whole_gradient(user_id, device, w_global_original, model2, WholeTrainSetUsers, epochs, criterion)
+        true_gradient_diff  = calculate_true_gradient(device, w_global_original, model2, WholeTrainSet, epochs, criterion)
+
+        whole_gradient_magnitude = calculate_gradient_magnitude(whole_gradient_diff)
+        if whole_gradient_magnitude > max_G:
+            max_G = whole_gradient_magnitude
+
+        # sigma_g: ‖∇F_u(w_global) − ∇f(w_global)‖²
+        whole_true_diff_magnitude = calculate_gradient_magnitude(
+            calculate_gradient_difference(whole_gradient_diff, true_gradient_diff)
+        )
+        if whole_true_diff_magnitude > max_sigma_g:
+            max_sigma_g = whole_true_diff_magnitude
+
         trainloader = TrainSetUsers[user_id]
-        
+        var_acc = 0.0
+        n_seen = 0
+        stop = False
         for epoch in range(epochs):
             for image, label in trainloader:
-                optimizer.zero_grad(set_to_none=True)     
-                image, label = image.to(device), label.to(device)  
+                with torch.no_grad():
+                    for param, saved in zip(model.parameters(), w_global_original):
+                        param.copy_(saved)
+                optimizer.zero_grad(set_to_none=True)
+                image, label = image.to(device), label.to(device)
                 output = model(image)
                 loss = criterion(output, label)
                 loss.backward()
                 optimizer.step()
                 torch.cuda.empty_cache()
-                
+
                 w_new = [param.data.clone().to(device) for param in model.parameters()]
-                
-                gradient_diff = calculate_gradient_difference(w_global, w_new)
-                whole_gradient_diff = calculate_whole_gradient(user_id, device, w_global, model2, WholeTrainSetUsers, epochs, criterion)
-                true_gradient_diff = calculate_true_gradient(device, w_global, model2, WholeTrainSet, epochs, criterion)
-                
-                gradient_magnitude = calculate_gradient_magnitude(gradient_diff)
-                varience = calculate_gradient_magnitude(calculate_gradient_difference(gradient_diff, whole_gradient_diff))
-                whole_true_diff_magnitude = calculate_gradient_magnitude(calculate_gradient_difference(whole_gradient_diff, true_gradient_diff))
 
-                if gradient_magnitude > max_G:
-                    max_G = gradient_magnitude
-                
-                cur_sigma_l += varience
+                minibatch_grad = calculate_gradient_difference(w_global_original, w_new)
+                # sigma_l: ‖minibatch_grad − full_batch_grad‖²
+                var = calculate_gradient_magnitude(
+                    calculate_gradient_difference(minibatch_grad, whole_gradient_diff)
+                )
+                var_acc += var
+                n_seen += 1
+                if n_seen >= N_VAR_SAMPLES:
+                    stop = True
+                    break
+            if stop:
+                break
 
-                if whole_true_diff_magnitude > max_sigma_g:
-                    max_sigma_g = whole_true_diff_magnitude
 
-                w_global = w_new
-                iii += 1
-        sigma_l = cur_sigma_l / (iii+1)
+        sigma_l = var_acc / max(n_seen, 1)
         if sigma_l > max_sigma_l:
             max_sigma_l = sigma_l
+
+
+    for i, (orig, cur) in enumerate(zip(w_global_original, w_global)):
+        assert torch.allclose(orig, cur), f"calculate_constants mutated w_global at index {i}"
 
     print(f"--> Local Variance Bound (sigma_l): {max_sigma_l:.4f}")
     print(f"--> Global Variance Bound (sigma_g): {max_sigma_g:.4f}")
