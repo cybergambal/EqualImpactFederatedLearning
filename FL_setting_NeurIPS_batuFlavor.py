@@ -89,6 +89,22 @@ class FederatedLearning:
             self.adamMomentum = [torch.zeros_like(param).to(self.device) for param in self.w_global]
             self.adamVariance = [torch.full_like(param, self.tau**2).to(self.device) for param in self.w_global]
 
+        # FedStale state — per-client gradient memories and stationary probabilities
+        if self.mode == 'fedstale':
+            # P_on_u = P_{0,1} / (P_{0,1} + P_{1,0}): stationary availability probability
+            self.fedstale_pon = np.zeros(self.num_users)
+            for u in range(self.num_users):
+                P01 = 1.0 - self.keepProbNotAvail[u]  # P_{0,1}: unavail -> avail
+                P10 = 1.0 - self.keepProbAvail[u]      # P_{1,0}: avail -> unavail
+                self.fedstale_pon[u] = P01 / (P01 + P10)
+            # h_i: gradient memory per user, initialised to zero (stored on CPU)
+            self.fedstale_memory = [
+                [torch.zeros_like(p).to("cpu") for p in self.w_global]
+                for _ in range(self.num_users)
+            ]
+            # Running sum Σ_i h_i kept on device for O(|S|) per-round update
+            self.fedstale_memory_sum = [torch.zeros_like(p).to(self.device) for p in self.w_global]
+
         # FEDFresh initialisation: compute ĝ_u = g_u(w_0) for all users, set τ_u = 1
         if self.mode == 'async_asymp_EI':
             self._initialize_gradients()
@@ -387,6 +403,141 @@ class FederatedLearning:
             # Update global model
             self.w_global = [self.w_global[j] + self.learning_rate_server * self.sum_terms[j]/len(self.selected_users_UL) for j in range(len(self.sum_terms))] 
         
+    def simulate_fedbuff(self, run, seed_index, timeframe):
+        """FedBuff: Buffered Asynchronous Federated Learning (Nguyen et al., 2022).
+
+        K = bufferLimit chosen users (random from available) compute gradients on their
+        local (possibly stale) model. The server aggregates with staleness scaling
+        s(τ) = 1/(1+τ)^0.5 and updates once per round. ALL available users then
+        receive the new global model so their local copy stays fresh for next round.
+        """
+        self.stepState()
+        if len(self.intermittentUsers) == 0:
+            print("No users available, skipping round")
+            self.UserAgeDL = self.UserAgeDL + self.allOnes
+            return self.w_global
+        print(f"Available Users = {self.intermittentUsers}")
+
+        # Select K chosen users randomly from available
+        k = min(self.bufferLimit, len(self.intermittentUsers))
+        chosen_idx = np.random.choice(len(self.intermittentUsers), k, replace=False)
+        self.selected_users_UL = self.intermittentUsers[chosen_idx]
+        self.num_send += k
+        print(f"Chosen Users (FedBuff) = {self.selected_users_UL.tolist()}")
+
+        # Only chosen users compute gradients on their local (possibly stale) model
+        self.train_users(self.selected_users_UL.tolist())
+
+        # Staleness-scaled aggregation: agg = Σ s(τ_u)·g_u,  s(τ) = 1/(1+τ)^0.5
+        agg = [torch.zeros_like(p).to(self.device) for p in self.w_global]
+        for user in self.selected_users_UL:
+            tau   = float(self.UserAgeDL[user].item())
+            scale = 1.0 / (1.0 + tau) ** 0.5
+            for j in range(len(agg)):
+                agg[j] = agg[j] + scale * self.sparse_gradient[user][j].to(self.device)
+            self.contribution[user] += np.sqrt(
+                sum(torch.sum((scale * g) ** 2).item() for g in self.sparse_gradient[user])
+            )
+            self.expected_gradient_magnitude[user] += np.sqrt(
+                sum(torch.sum(g ** 2).item() for g in self.sparse_gradient[user])
+            )
+
+        # Server update: normalise by K (number of buffered gradients)
+        self.w_global = [
+            self.w_global[j] + self.learning_rate_server * agg[j] / k
+            for j in range(len(self.w_global))
+        ]
+
+        # ALL available users receive the updated global model
+        for user in self.intermittentUsers:
+            self.w_user[user] = [w.clone() for w in self.w_global]
+            self.UserAgeDL[user] = 0   # reset staleness (becomes 1 after +allOnes)
+
+        self.UserAgeDL = self.UserAgeDL + self.allOnes
+        return self.w_global
+
+    def simulate_fedstale(self, run, seed_index, timeframe):
+        """FedStale: Federated Learning with Stale Gradient Memory (Malinovsky et al., 2024).
+
+        K = bufferLimit chosen users (random from available) receive the current global
+        model and compute a FRESH gradient. The server aggregates:
+
+            Δ = (β/N)·Σ_all h_i  +  (1/N)·Σ_{i∈S^t} (1/p_i)·(g_i − β·h_i)
+
+        Memory update: h_i ← g_i for i∈S^t; unchanged for i∉S^t.
+        Σ_i h_i is tracked incrementally to keep per-round cost O(|S^t|·layers).
+        ALL available users receive the updated model at the end of the round.
+
+        β = self.temperature:  0 → importance-weighted FedAvg,  1 → FedVARP
+        p_i = P_on_i (stationary Markov-chain availability probability)
+        """
+        self.stepState()
+        if len(self.intermittentUsers) == 0:
+            print("No users available, skipping round")
+            self.UserAgeDL = self.UserAgeDL + self.allOnes
+            return self.w_global
+        print(f"Available Users = {self.intermittentUsers}")
+
+        N    = float(self.num_users)
+        beta = self.temperature
+
+        # Select K chosen users randomly from available
+        k = min(self.bufferLimit, len(self.intermittentUsers))
+        chosen_idx = np.random.choice(len(self.intermittentUsers), k, replace=False)
+        self.selected_users_UL = self.intermittentUsers[chosen_idx]
+        self.num_send += k
+        print(f"Chosen Users (FedStale) = {self.selected_users_UL.tolist()}")
+
+        # Give chosen users the current global model, then compute fresh gradient
+        for user in self.selected_users_UL:
+            self.w_user[user] = [w.clone() for w in self.w_global]
+        self.train_users(self.selected_users_UL.tolist())
+
+        # ── Aggregation ──────────────────────────────────────────────────────────
+        delta = [torch.zeros_like(p).to(self.device) for p in self.w_global]
+
+        # Memory term: (β/N) · Σ_all h_i  (uses running sum — O(layers), not O(N·layers))
+        for j in range(len(delta)):
+            delta[j] = delta[j] + (beta / N) * self.fedstale_memory_sum[j]
+
+        # Fresh-correction term: (1/N) · Σ_{i∈S^t} (1/p_i) · (g_i − β·h_i)
+        for user in self.selected_users_UL:
+            p_i   = max(float(self.fedstale_pon[user]), 1e-6)
+            inv_p = 1.0 / p_i
+            for j in range(len(delta)):
+                g_i = self.sparse_gradient[user][j].to(self.device)
+                h_i = self.fedstale_memory[user][j].to(self.device)
+                delta[j] = delta[j] + (inv_p / N) * (g_i - beta * h_i)
+
+        # Server model update
+        self.w_global = [
+            self.w_global[j] + self.learning_rate_server * delta[j]
+            for j in range(len(self.w_global))
+        ]
+
+        # Update memories and running sum for chosen users only
+        for user in self.selected_users_UL:
+            for j in range(len(self.w_global)):
+                new_h = self.sparse_gradient[user][j]       # on CPU
+                old_h = self.fedstale_memory[user][j]
+                self.fedstale_memory_sum[j] = self.fedstale_memory_sum[j] + \
+                    new_h.to(self.device) - old_h.to(self.device)
+                self.fedstale_memory[user][j] = new_h.clone()
+            self.contribution[user] += np.sqrt(
+                sum(torch.sum(g ** 2).item() for g in self.sparse_gradient[user])
+            )
+            self.expected_gradient_magnitude[user] += np.sqrt(
+                sum(torch.sum(g ** 2).item() for g in self.sparse_gradient[user])
+            )
+
+        # ALL available users receive the updated global model
+        for user in self.intermittentUsers:
+            self.w_user[user] = [w.clone() for w in self.w_global]
+            self.UserAgeDL[user] = 0   # reset staleness (becomes 1 after +allOnes)
+
+        self.UserAgeDL = self.UserAgeDL + self.allOnes
+        return self.w_global
+
     def simulate_async_Asymp_EI(self, run, seed_index, timeframe):
         """FEDFresh algorithm (Algorithm 1 in the paper).
 
@@ -613,6 +764,10 @@ class FederatedLearning:
             return self.simulate_async_Asymp_random(runNo, seed_index, timeframe)
         elif self.mode == 'async_asymp_fresh':
             return self.simulate_async_Asymp_Fresh(runNo, seed_index, timeframe)
+        elif self.mode == 'fedbuff':
+            return self.simulate_fedbuff(runNo, seed_index, timeframe)
+        elif self.mode == 'fedstale':
+            return self.simulate_fedstale(runNo, seed_index, timeframe)
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
  
