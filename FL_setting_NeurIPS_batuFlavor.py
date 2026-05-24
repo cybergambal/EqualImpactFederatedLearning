@@ -105,10 +105,6 @@ class FederatedLearning:
             # Running sum Σ_i h_i kept on device for O(|S|) per-round update
             self.fedstale_memory_sum = [torch.zeros_like(p).to(self.device) for p in self.w_global]
 
-        # FEDFresh initialisation: compute ĝ_u = g_u(w_0) for all users, set τ_u = 1
-        if self.mode == 'async_asymp_EI':
-            self._initialize_gradients()
-
     def lp_cosine_similarity(self, x: torch.Tensor, y: torch.Tensor, p: int = 2) -> float:
         """
         Compute the Lp cosine similarity between two flattened gradient vectors.
@@ -358,11 +354,6 @@ class FederatedLearning:
             sparse_gradient = self.top_k_sparsificate_model_weights(gradient_diff, self.fraction[0]) 
             self.sparse_gradient[user_id] = [sg.to("cpu") for sg in sparse_gradient]
 
-    def _initialize_gradients(self):
-        """FEDFresh initialisation (Algorithm 1, line 2): compute g_u(w_0) for every user."""
-        print("FEDFresh init: computing g_u(w_0) for all users...")
-        self.train_users(list(range(self.num_users)))
-
     def aggregate_gradients(self, tempUserAgeDL):
 
         # Normalize gradients if unit_gradients is set
@@ -539,19 +530,14 @@ class FederatedLearning:
         return self.w_global
 
     def simulate_async_Asymp_EI(self, run, seed_index, timeframe):
-        """FEDFresh algorithm (Algorithm 1 in the paper).
+        """FEDFresh-style: probabilistic selection policy p_u(λ), stale-model training.
 
-        Each round has three phases:
-          Phase 1 — Transmission: available users independently transmit their
-                    *previously stored* gradient ĝ_u with probability p_u(λ).
-          Phase 2 — Local gradient refresh: ALL available users receive the
-                    updated global model, compute a fresh gradient g_u(w_t),
-                    and store it as ĝ_u; unavailable users increment τ_u.
-          Phase 3 — Server aggregation: w_{t+1} = w_t - η * Σ d(τ_k) ĝ_k
-                    with d(τ) = 1/τ  (handled inside aggregate_gradients).
+        Each available user independently decides to transmit with prob p_u(λ)
+        (the FEDFresh blend of fairness and efficiency policies).
+        Only the chosen users train — on their local (possibly stale) model.
+        The server aggregates with 1/τ staleness weighting.
+        ALL available users then receive the updated global model.
         """
-
-        # Advance Markov chain → get available users S_t
         self.stepState()
         if len(self.intermittentUsers) == 0:
             print("No users available, skipping round")
@@ -559,31 +545,27 @@ class FederatedLearning:
             return self.w_global
         print(f"Available Users S_t = {self.intermittentUsers}")
 
-        # ── Phase 1: Transmission ──────────────────────────────────────────────
-        # Each available user decides to transmit the stored ĝ_u with prob p_u(λ)
+        # Probabilistic selection: each available user transmits with prob p_u(λ)
         tempPi = self.pi[self.intermittentUsers].flatten()
         bernoulli_flips = np.random.rand(len(self.intermittentUsers)) < tempPi
         self.selected_users_UL = self.intermittentUsers[bernoulli_flips]
         self.num_send += len(self.selected_users_UL)
         print(f"Transmitting Users K_t = {self.selected_users_UL.tolist()}")
 
-        # ── Phase 3: Server aggregation (uses stored ĝ_u, before Phase 2 refresh)
-        # Capture τ_k values now — they will be reset for available users in Phase 2
         if len(self.selected_users_UL) > 0:
+            # Train only chosen users on their stale local model w_user[u]
+            self.train_users(self.selected_users_UL.tolist())
+
+            # Capture τ before the age reset, then aggregate with 1/τ weighting
             tempUserAgeDL = self.UserAgeDL.clone().to(self.device)
             self.aggregate_gradients(tempUserAgeDL)
 
-        # ── Phase 2: Local gradient refresh ────────────────────────────────────
-        # All available users receive the broadcast w_t, compute g_u(w_t), reset τ_u = 1
+        # ALL available users receive the updated global model
         for user in self.intermittentUsers:
             self.w_user[user] = [w.clone() for w in self.w_global]
-            self.UserAgeDL[user] = 0  # becomes 1 after +allOnes below
+            self.UserAgeDL[user] = 0  # becomes 1 after +allOnes
 
-        self.train_users(self.intermittentUsers.tolist())  # ALL available, not just K_t
-
-        # Update ages: available users → τ = 1; unavailable users → τ += 1
         self.UserAgeDL = self.UserAgeDL + self.allOnes
-
         return self.w_global
     
     def simulate_async_Asymp_Age(self, run, seed_index, timeframe):
