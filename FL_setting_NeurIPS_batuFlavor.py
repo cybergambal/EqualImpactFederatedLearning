@@ -89,14 +89,21 @@ class FederatedLearning:
             self.adamMomentum = [torch.zeros_like(param).to(self.device) for param in self.w_global]
             self.adamVariance = [torch.full_like(param, self.tau**2).to(self.device) for param in self.w_global]
 
-        # FedStale state — per-client gradient memories and stationary probabilities
+        # FedStale state — per-client gradient memories and participation probs
         if self.mode == 'fedstale':
-            # P_on_u = P_{0,1} / (P_{0,1} + P_{1,0}): stationary availability probability
-            self.fedstale_pon = np.zeros(self.num_users)
-            for u in range(self.num_users):
-                P01 = 1.0 - self.keepProbNotAvail[u]  # P_{0,1}: unavail -> avail
-                P10 = 1.0 - self.keepProbAvail[u]      # P_{1,0}: avail -> unavail
-                self.fedstale_pon[u] = P01 / (P01 + P10)
+            # p_i = marginal probability that client i lands in the aggregated
+            # set S_t. Here S_t = K users drawn uniformly at random from the
+            # available set A_t, so
+            #     p_i = P_on_i * E[ min(1, K/|A_t|) | i in A_t ]
+            #         = E[ 1{i in A_t} * min(1, K/|A_t|) ],
+            # estimated by Monte-Carlo over the availability Markov chains.
+            # (Stationary availability P_on alone is NOT p_i: it ignores the
+            #  K-of-available selection bottleneck and would make 1/p_i wrong.)
+            self.fedstale_pi = self._estimate_fedstale_pi()
+            print(f"FedStale p_i (MC estimate): "
+                  f"min={self.fedstale_pi.min():.4f} "
+                  f"mean={self.fedstale_pi.mean():.4f} "
+                  f"max={self.fedstale_pi.max():.4f}")
             # h_i: gradient memory per user, initialised to zero (stored on CPU)
             self.fedstale_memory = [
                 [torch.zeros_like(p).to("cpu") for p in self.w_global]
@@ -104,6 +111,49 @@ class FederatedLearning:
             ]
             # Running sum Σ_i h_i kept on device for O(|S|) per-round update
             self.fedstale_memory_sum = [torch.zeros_like(p).to(self.device) for p in self.w_global]
+
+    def _estimate_fedstale_pi(self, n_rounds=100000, burn_in=2000, seed=20240507):
+        """Monte-Carlo estimate of the marginal FedStale participation probability.
+
+        S_t (the aggregated set) is K = bufferLimit users drawn uniformly at
+        random from the available set A_t. The probability that client i ends
+        up in S_t is therefore
+
+            p_i = P_on_i * E[ min(1, K/|A_t|) | i in A_t ]
+                = E[ 1{i in A_t} * min(1, K/|A_t|) ],
+
+        which is exactly the quantity the 1/p_i importance weight in
+        simulate_fedstale requires. Client availability follows the same
+        two-state Markov chain as stepState(); this routine simulates those
+        chains and averages the per-round inclusion probability.
+        """
+        rng = np.random.default_rng(seed)
+        N = self.num_users
+        K = float(self.bufferLimit)
+        keep_av = np.asarray(self.keepProbAvail, dtype=float)     # P[stay avail | avail]
+        keep_un = np.asarray(self.keepProbNotAvail, dtype=float)  # P[stay unavail | unavail]
+        P01 = 1.0 - keep_un
+        P10 = 1.0 - keep_av
+        denom = P01 + P10
+        with np.errstate(invalid='ignore', divide='ignore'):
+            pon = np.where(denom > 0, P01 / denom, 0.5)           # stationary availability
+
+        # start each chain from (approximately) its stationary distribution
+        state = (rng.random(N) < pon).astype(np.int8)
+        acc = np.zeros(N)
+        counted = 0
+        for t in range(burn_in + n_rounds):
+            # one Markov step — identical transition rule to stepState()
+            stay_prob = np.where(state == 1, keep_av, keep_un)
+            flip = rng.random(N) >= stay_prob
+            state = np.where(flip, 1 - state, state).astype(np.int8)
+            if t < burn_in:
+                continue
+            n_av = int(state.sum())
+            if n_av > 0:
+                acc += state * min(1.0, K / n_av)
+            counted += 1
+        return acc / max(counted, 1)
 
     def lp_cosine_similarity(self, x: torch.Tensor, y: torch.Tensor, p: int = 2) -> float:
         """
@@ -457,7 +507,7 @@ class FederatedLearning:
         return self.w_global
 
     def simulate_fedstale(self, run, seed_index, timeframe):
-        """FedStale: Federated Learning with Stale Gradient Memory (Malinovsky et al., 2024).
+        """FedStale: leveraging stale client updates (Rodio & Neglia, 2024).
 
         K = bufferLimit chosen users (random from available) receive the current global
         model and compute a FRESH gradient. The server aggregates:
@@ -469,7 +519,8 @@ class FederatedLearning:
         ALL available users receive the updated model at the end of the round.
 
         β = self.temperature:  0 → importance-weighted FedAvg,  1 → FedVARP
-        p_i = P_on_i (stationary Markov-chain availability probability)
+        p_i = marginal probability i is in the aggregated set S^t, estimated by
+              Monte-Carlo in _estimate_fedstale_pi() (NOT the raw availability P_on).
         """
         self.stepState()
         if len(self.intermittentUsers) == 0:
@@ -502,7 +553,7 @@ class FederatedLearning:
 
         # Fresh-correction term: (1/N) · Σ_{i∈S^t} (1/p_i) · (g_i − β·h_i)
         for user in self.selected_users_UL:
-            p_i   = max(float(self.fedstale_pon[user]), 1e-6)
+            p_i   = max(float(self.fedstale_pi[user]), 1e-6)
             inv_p = 1.0 / p_i
             for j in range(len(delta)):
                 g_i = self.sparse_gradient[user][j].to(self.device)

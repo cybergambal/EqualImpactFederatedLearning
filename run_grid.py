@@ -58,7 +58,9 @@ RUNS = [
     {"selected_mode": "async_asymp_EI", "temp": "inf"},  # alpha = inf (equal impact)
     {"selected_mode": "async_asymp_age"},                # baseline, temp unused
     {"selected_mode": "fedbuff"},                        # baseline, temp unused
+    {"selected_mode": "fedstale", "temp": 0},          # temp = beta for fedstale
     {"selected_mode": "fedstale", "temp": 0.5},          # temp = beta for fedstale
+    {"selected_mode": "fedstale", "temp": 1},          # temp = beta for fedstale
 ]
 
 GRID_OUT = "grid_results"   # parent folder for all run outputs (relative to this file)
