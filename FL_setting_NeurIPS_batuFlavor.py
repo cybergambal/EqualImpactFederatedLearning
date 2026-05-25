@@ -148,78 +148,98 @@ class FederatedLearning:
 
         return chosen_list
     
-    def compute_pi_unif(self, r, pon):
-        """Fair uniform participation policy via bisection.
+    def compute_pi(self, r, pon, alpha):
+        """Unified alpha-fair waterfilling policy (KKT solution).
 
-        Finds c s.t. p_u^unif = min(1, c/R_u) with sum_u P_on_u * p_u^unif = K.
-        This equalises asymptotic contribution rates (R_u * p_u = const for unclamped users).
-        Naively normalising 1/R_u then clipping undershoots K whenever some users hit p=1.
+        Solves: max Σ_u U_α(p_u · R_u)  s.t.  Σ_u P_on_u · p_u ≤ K
+        KKT: p*_u = min(1, (R_u^(1-α) / (λ* · P_on_u))^(1/α))
+        Implemented in log-space for numerical stability across all α values.
+
+        alpha controls the fairness–efficiency trade-off:
+          alpha = 0   : throughput maximisation (greedy by R_u / P_on_u)
+          alpha = 1   : proportional fairness   (p*_u ∝ 1 / P_on_u)
+          alpha = 2   : harmonic fairness       (p*_u ∝ 1 / sqrt(R_u · P_on_u))
+          alpha = inf : max-min fairness        (p*_u · R_u = const)
         """
         K = float(self.bufferLimit)
-        valid = r > 1e-12
+        N = self.num_users
+        valid = (pon > 1e-12) & (r > 1e-12)
 
-        if np.dot(pon, np.ones(self.num_users)) <= K:
-            return np.ones(self.num_users)
+        # If total availability is within budget, all users participate freely
+        if np.dot(pon, np.ones(N)) <= K:
+            return np.ones(N)
 
-        def load(c):
-            p = np.where(valid, np.minimum(1.0, c / r), 0.0)
+        # --- alpha = 0: throughput, greedy by R_u / P_on_u ---
+        if alpha == 0:
+            ratio = np.where(valid, r / pon, -np.inf)
+            order = np.argsort(-ratio)
+            p = np.zeros(N)
+            budget = K
+            for u in order:
+                if not valid[u] or budget <= 0:
+                    break
+                alloc = min(1.0, budget / pon[u])
+                p[u] = alloc
+                budget -= pon[u] * alloc
+            return p
+
+        # --- alpha → ∞: max-min, p*_u · R_u = const ---
+        if np.isinf(alpha):
+            def load_mm(c):
+                p = np.where(valid, np.minimum(1.0, c / r), 0.0)
+                return np.dot(pon, p)
+            r_max = r[valid].max() if valid.any() else 1.0
+            c_lo, c_hi = 0.0, r_max * 1e9
+            for _ in range(200):
+                c_mid = (c_lo + c_hi) / 2.0
+                if load_mm(c_mid) < K:
+                    c_lo = c_mid
+                else:
+                    c_hi = c_mid
+            c_star = (c_lo + c_hi) / 2.0
+            return np.where(valid, np.minimum(1.0, c_star / r), 0.0)
+
+        # --- General: 0 < alpha < ∞, log-space to avoid float overflow ---
+        # log(phi_u) = (1-alpha)*log(R_u) - log(P_on_u)
+        log_phi = np.where(valid, (1.0 - alpha) * np.log(r) - np.log(pon), -np.inf)
+
+        def load(log_nu):
+            # p_u = min(1, exp((log_phi_u - log_nu) / alpha))
+            lp = (log_phi - log_nu) / alpha
+            p = np.where(valid, np.where(lp >= 0.0, 1.0, np.exp(lp)), 0.0)
             return np.dot(pon, p)
 
-        # load is increasing in c; bisect to find c* s.t. load(c*) = K
-        c_lo, c_hi = 0.0, r.max() * 1e9
+        # Bisect in log(nu) space; load is decreasing in log_nu
+        log_phi_valid = log_phi[valid]
+        log_nu_lo = log_phi_valid.min() - 100.0  # all p=1 → load = Σ P_on_u > K
+        log_nu_hi = log_phi_valid.max() + 100.0  # all p≈0 → load ≈ 0 < K
         for _ in range(200):
-            c_mid = (c_lo + c_hi) / 2.0
-            if load(c_mid) < K:
-                c_lo = c_mid
+            log_nu_mid = (log_nu_lo + log_nu_hi) / 2.0
+            if load(log_nu_mid) > K:
+                log_nu_lo = log_nu_mid
             else:
-                c_hi = c_mid
+                log_nu_hi = log_nu_mid
 
-        c_star = (c_lo + c_hi) / 2.0
-        return np.where(valid, np.minimum(1.0, c_star / r), 0.0)
-
-    def compute_pi_eff(self, r, pon, alpha=1.0):
-        """Waterfilling solution for the staleness-minimizing efficient policy (Section IV.D).
-
-        Solves: min sum_u R_u * U_alpha(p_u^eff)  s.t.  sum_u P_on_u * p_u^eff <= K
-        where gamma_u = R_u / P_on_u is the reward-to-cost ratio.
-        Solution: p_u^eff = min(1, (gamma_u / mu*)^{1/alpha}), mu* found by bisection.
-        """
-        K = float(self.bufferLimit)
-        valid = pon > 1e-12
-        gamma = np.where(valid, r / pon, 0.0)
-
-        # If all users can transmit freely, set p=1
-        if np.dot(pon, np.ones(self.num_users)) <= K:
-            return np.ones(self.num_users)
-
-        def load(nu):
-            p = np.where(valid, np.minimum(1.0, (gamma / nu) ** (1.0 / alpha)), 0.0)
-            return np.dot(pon, p)
-
-        # Bisection: load is decreasing in nu; find nu* s.t. load(nu*) = K
-        nu_lo, nu_hi = 1e-12, gamma.max() * 1e9
-        for _ in range(200):
-            nu_mid = (nu_lo + nu_hi) / 2.0
-            if load(nu_mid) > K:
-                nu_lo = nu_mid
-            else:
-                nu_hi = nu_mid
-
-        nu_star = (nu_lo + nu_hi) / 2.0
-        pi_eff = np.where(valid, np.minimum(1.0, (gamma / nu_star) ** (1.0 / alpha)), 0.0)
-        return pi_eff
+        log_nu_star = (log_nu_lo + log_nu_hi) / 2.0
+        lp_star = np.where(valid, (log_phi - log_nu_star) / alpha, -np.inf)
+        return np.where(valid, np.where(lp_star >= 0.0, 1.0, np.exp(lp_star)), 0.0)
 
     def calculate_policy(self):
-        """Compute FEDFresh participation probabilities (Eq. 21):
-            p_u(lambda) = lambda * pi_unif + (1 - lambda) * pi_eff
-        where lambda = self.temperature.
+        """Compute FEDFresh participation probabilities via alpha-fair policy.
+
+        Solves: max Σ_u U_alpha(p_u · R_u)  s.t.  Σ_u P_on_u · p_u ≤ K
+        where alpha = self.temperature controls the fairness–efficiency trade-off:
+          alpha = 0   : throughput maximisation
+          alpha = 1   : proportional fairness
+          alpha = 2   : harmonic fairness
+          alpha = inf : max-min fairness
         """
         r = np.zeros(self.num_users)
         pon = np.zeros(self.num_users)
 
         for iii in range(self.num_users):
-            P10 = 1 - self.keepProbAvail[iii]   # P_{1,0}: available -> unavailable
-            P01 = 1 - self.keepProbNotAvail[iii] # P_{0,1}: unavailable -> available
+            P10 = 1 - self.keepProbAvail[iii]    # P_{1,0}: available -> unavailable
+            P01 = 1 - self.keepProbNotAvail[iii]  # P_{0,1}: unavailable -> available
 
             # R_u: asymptotic average inverse-staleness rate (renewal reward, d(tau)=1/tau)
             term1 = (1 - P10)
@@ -230,19 +250,8 @@ class FederatedLearning:
             r[iii] = numerator / denominator
             pon[iii] = P01 / (P01 + P10)
 
-        # pi_unif: fair uniform policy — p_u^unif = min(1, c/R_u) via bisection
-        pi_unif = self.compute_pi_unif(r, pon)
-
-        # pi_eff: staleness-minimising efficient policy via waterfilling (alpha=1, log utility)
-        pi_eff = self.compute_pi_eff(r, pon, alpha=1.0)
-
-        # FEDFresh blend: p_u(lambda) = lambda * pi_unif + (1-lambda) * pi_eff  (Eq. 21)
-        pi = self.temperature * pi_unif + (1.0 - self.temperature) * pi_eff
-
-        print(f"pi_unif: {pi_unif}")
-        print(f"pi_eff:  {pi_eff}")
-        print(f"FEDFresh pi (lambda={self.temperature}): {pi}")
-
+        pi = self.compute_pi(r, pon, alpha=self.temperature)
+        print(f"FEDFresh pi (alpha={self.temperature}): {pi}")
         return pi
 
     def innerProductTest(self):
@@ -399,7 +408,7 @@ class FederatedLearning:
 
         K = bufferLimit chosen users (random from available) compute gradients on their
         local (possibly stale) model. The server aggregates with staleness scaling
-        s(τ) = 1/(1+τ)^0.5 and updates once per round. ALL available users then
+        s(τ) = 1/τ^0.5 and updates once per round. ALL available users then
         receive the new global model so their local copy stays fresh for next round.
         """
         self.stepState()
@@ -419,11 +428,11 @@ class FederatedLearning:
         # Only chosen users compute gradients on their local (possibly stale) model
         self.train_users(self.selected_users_UL.tolist())
 
-        # Staleness-scaled aggregation: agg = Σ s(τ_u)·g_u,  s(τ) = 1/(1+τ)^0.5
+        # Staleness-scaled aggregation: agg = Σ s(τ_u)·g_u,  s(τ) = 1/τ^0.5
         agg = [torch.zeros_like(p).to(self.device) for p in self.w_global]
         for user in self.selected_users_UL:
             tau   = float(self.UserAgeDL[user].item())
-            scale = 1.0 / (1.0 + tau) ** 0.5
+            scale = 1.0 / tau ** 0.5
             for j in range(len(agg)):
                 agg[j] = agg[j] + scale * self.sparse_gradient[user][j].to(self.device)
             self.contribution[user] += np.sqrt(

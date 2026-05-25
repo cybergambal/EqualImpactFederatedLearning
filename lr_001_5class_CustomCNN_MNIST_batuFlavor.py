@@ -2,7 +2,9 @@ import torch
 import torch.optim as optim
 from torch import nn
 import numpy as np
+import os
 import time
+import shutil
 import argparse
 from datetime import datetime
 import sys
@@ -12,55 +14,34 @@ from utils import get_data_loaders, get_Model, evaluate_per_label_accuracy, save
 
 # Start time
 start_time = time.time()
-# Simulate command-line arguments
-sys.argv = [
-     'placeholder_script_name',
-     '--learning_rate_client', '0.01',   #for adam 0.01, #for sgd 0.01
-     '--learning_rate_server', '0.1',  #for adam 0.001, #for sgd 0.1
-     '--epochs', '1',
-     '--batch_size', '400',
-     '--num_users', '100',
-     '--fraction', '1',
-     '--num_timeframes', '1000',
-     '--seeds', '56', #'3', #, '29', '85', '65',
-     '--num_runs', '1',
-     '--selected_mode', 'async_asymp_EI',
-     '--cos_similarity', '4',
-     '--train_mode', 'all',
-     '--bufferLimit', '10',
-     '--theta_inner', '0.1',
-     '--data_mode', 'CIFAR',
-     '--unit_gradients', '0',
-     '--adam', '0',
-     '--temp', '0.2',
-     '--cos_similarity_type', '0',
-     '--user_prob_disc', '0.45',
-     '--cuda', '1'
- ]
-
-# Command-line arguments
+# Command-line arguments.
+# The defaults below reproduce the experiment configuration that was previously
+# hardcoded into sys.argv, so running this file with no arguments behaves
+# exactly as before. The grid runner (run_grid.py) overrides only --temp,
+# --user_prob_disc and --selected_mode; every other setting is held fixed.
 parser = argparse.ArgumentParser(description="Federated Learning with Slotted ALOHA and CIFAR-10 Dataset", fromfile_prefix_chars='@')
-parser.add_argument('--learning_rate_client', type=float, default=0.0001, help='Learning rate for client training')
-parser.add_argument('--learning_rate_server', type=float, default=0.0001, help='Learning rate for server training')
-parser.add_argument('--epochs', type=int, default=3, help='Number of epochs for training')
-parser.add_argument('--batch_size', type=int, default=128, help='Batch size for training')
-parser.add_argument('--num_users', type=int, default=10, help='Number of users in federated learning')
-parser.add_argument('--fraction', type=float, nargs='+', default=[0.1], help='Fraction for top-k sparsification')
-parser.add_argument('--num_timeframes', type=int, default=15, help='Number of timeframes for simulation')
-parser.add_argument('--seeds', type=int, nargs='+', default=[85, 12, 29], help='Random seeds for averaging results')
-parser.add_argument('--num_runs', type=int, default=5,help='Number of simulations')
-parser.add_argument('--selected_mode', type=str, default='async_Inner',help='Which setting we are using: genie_aided, vanilla, user_selection_cos, user_selection_cos_dis, user_selection_acc, user_selection_acc_increment, user_selection_aog, user_selection_norm')
-parser.add_argument('--cos_similarity', type=int, default=2,help='What type of cosine similarity we want to test: cos2 = 2, cos4 = 4, ...')
-parser.add_argument('--train_mode', type=str, default='all',help='Which part of network we are training: all, dense, conv')
-parser.add_argument('--bufferLimit', type=int, default=1,help='Buffer size limit for how many users to wait before aggregation')
-parser.add_argument('--theta_inner', type=float, default=0.9,help='Theta coeffcient for inner product test')
+parser.add_argument('--learning_rate_client', type=float, default=0.01, help='Learning rate for client training')
+parser.add_argument('--learning_rate_server', type=float, default=0.1, help='Learning rate for server training')
+parser.add_argument('--epochs', type=int, default=1, help='Number of epochs for training')
+parser.add_argument('--batch_size', type=int, default=400, help='Batch size for training')
+parser.add_argument('--num_users', type=int, default=100, help='Number of users in federated learning')
+parser.add_argument('--fraction', type=float, nargs='+', default=[1.0], help='Fraction for top-k sparsification')
+parser.add_argument('--num_timeframes', type=int, default=1000, help='Number of timeframes for simulation')
+parser.add_argument('--seeds', type=int, nargs='+', default=[56], help='Random seeds for averaging results')
+parser.add_argument('--num_runs', type=int, default=1, help='Number of simulations')
+parser.add_argument('--selected_mode', type=str, default='async_asymp_EI', help='FL mode: async_asymp_EI, async_asymp_age, async_asymp_cossim, async_asymp_random, async_asymp_fresh, fedbuff, fedstale')
+parser.add_argument('--cos_similarity', type=int, default=4, help='What type of cosine similarity we want to test: cos2 = 2, cos4 = 4, ...')
+parser.add_argument('--train_mode', type=str, default='all', help='Which part of network we are training: all, dense, conv')
+parser.add_argument('--bufferLimit', type=int, default=10, help='Buffer size limit / per-round client budget K')
+parser.add_argument('--theta_inner', type=float, default=0.1, help='Theta coefficient for inner product test')
 parser.add_argument('--data_mode', type=str, default='CIFAR', help='Dataset mode: MNIST or CIFAR')
 parser.add_argument('--unit_gradients', type=int, default=0, help='Whether to use unit gradients 0=False, 1=True')
 parser.add_argument('--adam', type=int, default=0, help='Whether to use FedAdam optimizer 0=False, 1=True')
-parser.add_argument('--temp', type=float, default=1, help='Temperature parameter [0,1] for how contribution is user selection (higher temp -> more uniform)')
+parser.add_argument('--temp', type=float, default=0.2, help='alpha-fair parameter (alpha): 0=throughput/greedy, 1=proportional fairness, inf=equal impact')
 parser.add_argument('--cos_similarity_type', type=int, default=0, help='Type of cosine similarity calculation: 0=lowest, 1=highest')
-parser.add_argument('--user_prob_disc', type=float, default=0, help='user probability discrepancy parameter [-0.5,0.5]')
-parser.add_argument('--cuda', type=int, default=0, help='CUDA device number to use')
+parser.add_argument('--user_prob_disc', type=float, default=0.45, help='user probability discrepancy parameter, must satisfy -0.5 < disc < 0.5')
+parser.add_argument('--cuda', type=int, default=1, help='CUDA device number to use')
+parser.add_argument('--out_dir', type=str, default=None, help='If set, move the results folder here after the run (overwrites an existing folder at that path)')
 
 args = parser.parse_args()
 
@@ -214,3 +195,18 @@ end_time = time.time()
 elapsed_time = end_time - start_time
 current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 save_data_to_csv(accuracy_distributions, contribution_distributions, chosen_users_over_time, expected_gradient_magnitude, num_users, num_timeframes, args, current_time, start_time, elapsed_time, end_time, num_runs, seeds_for_avg, num_send)
+
+# Relocate the auto-named results folder if an explicit output directory was requested.
+if args.out_dir:
+    src_dir = f"./results10slot1mem_{current_time}"
+    if os.path.isdir(src_dir):
+        if os.path.abspath(src_dir) != os.path.abspath(args.out_dir):
+            parent = os.path.dirname(os.path.abspath(args.out_dir))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            if os.path.exists(args.out_dir):
+                shutil.rmtree(args.out_dir)
+            shutil.move(src_dir, args.out_dir)
+        print(f"Results moved to: {args.out_dir}")
+    else:
+        print(f"WARNING: results folder '{src_dir}' not found; --out_dir ignored.")
